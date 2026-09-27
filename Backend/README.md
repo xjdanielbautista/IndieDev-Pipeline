@@ -25,10 +25,45 @@ La API estará disponible en `http://127.0.0.1:8000`; el chequeo básico está e
 
 ## MySQL
 
-Crear una base de datos llamada `indiedev` y configurar la variable `DATABASE_URL`. El archivo `.env.example` muestra el formato esperado; exporta la variable en la terminal antes de iniciar Uvicorn:
+### Instalar e iniciar MySQL
+
+Si MySQL no está instalado, actualiza los paquetes e instala el servidor:
 
 ```bash
-export DATABASE_URL='mysql+pymysql://user:contraseña@localhost:3306/indiedev'
+sudo apt-get update
+sudo apt-get install -y mysql-server
+```
+
+Inicia el servicio antes de ejecutar la API:
+
+```bash
+sudo service mysql start
+```
+
+### Crear la base de datos y el usuario
+
+Abre la consola de MySQL:
+
+```bash
+sudo mysql
+```
+
+Dentro de la consola, crea la base de datos y un usuario con permisos sobre ella. Puedes cambiar la contraseña de ejemplo por una propia:
+
+```sql
+CREATE DATABASE indiedev;
+CREATE USER 'user'@'localhost' IDENTIFIED BY 'password';
+GRANT ALL PRIVILEGES ON indiedev.* TO 'user'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+### Conectar la API a MySQL
+
+Los datos del usuario, contraseña, host, puerto y base de datos se colocan en `DATABASE_URL`. En este ejemplo, `user` y `password` son los que se crearon arriba:
+
+```bash
+export DATABASE_URL='mysql+pymysql://user:password@localhost:3306/indiedev'
 uvicorn app.main:app --reload
 ```
 
@@ -46,4 +81,3 @@ Las tablas se crean al iniciar la aplicación para este prototipo. Antes de un d
 ## Pendiente
 
 Este avance no implementa autenticación, autorización efectiva por rol, migraciones, recepción/verificación de webhooks de GitHub ni la subida binaria a Firebase/S3. El bloqueo de assets y el filtrado multi-tenant son una base de dominio, no un control de seguridad suficiente para producción.
-
