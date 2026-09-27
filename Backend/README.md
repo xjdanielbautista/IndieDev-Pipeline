@@ -28,7 +28,7 @@ La API estará disponible en `http://127.0.0.1:8000`; el chequeo básico está e
 Crear una base de datos llamada `indiedev` y configurar la variable `DATABASE_URL`. El archivo `.env.example` muestra el formato esperado; exporta la variable en la terminal antes de iniciar Uvicorn:
 
 ```bash
-export DATABASE_URL='mysql+pymysql://indiedev:indiedev@localhost:3306/indiedev'
+export DATABASE_URL='mysql+pymysql://user:contraseña@localhost:3306/indiedev'
 uvicorn app.main:app --reload
 ```
 

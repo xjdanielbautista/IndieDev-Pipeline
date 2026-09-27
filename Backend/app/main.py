@@ -70,6 +70,12 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="El identificador del estudio ya existe") from error
     return tenant
 
+@app.get("/api/tenants/{tenant_id}", response_model=TenantRead)
+def get_tenant(tenant_id: int, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    return tenant
 
 @app.post(
     "/api/tenants/{tenant_id}/projects",
