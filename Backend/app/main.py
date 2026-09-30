@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
+from fastapi.middleware.cors import CORSMiddleware
 from .models import Asset, Build, MemberRole, Membership, Project, Task, Tenant, User
 from .schemas import (
     AssetCreate,
@@ -34,6 +35,13 @@ app = FastAPI(
     description="API inicial para la gestión multi-tenant de estudios indie.",
     version="0.1.0",
     lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
