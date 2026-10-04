@@ -22,6 +22,7 @@ uvicorn app.main:app --reload
 ```
 
 La API estará disponible en `http://127.0.0.1:8000`; el chequeo básico está en `/health` y Swagger UI en `/docs`.
+El backend permite solicitudes del frontend local en `http://localhost:5173` de forma predeterminada. Al cambiar el puerto local, define `FRONTEND_ORIGINS` con el origen exacto del frontend.
 
 ## MySQL
 
@@ -68,6 +69,21 @@ uvicorn app.main:app --reload
 ```
 
 Las tablas se crean al iniciar la aplicación para este prototipo. Antes de un despliegue se deben agregar migraciones con Alembic.
+
+### Configurar Render y Vercel
+
+Como el backend está en la carpeta `Backend`, configura esa carpeta como **Root Directory** del servicio en Render y estas variables de entorno:
+
+- `DATABASE_URL`: URL de conexión a la base de datos MySQL accesible desde Render.
+- `FRONTEND_ORIGINS`: dominio del frontend publicado en Vercel, por ejemplo `https://mi-proyecto.vercel.app`. No agregues una ruta como `/dashboard`.
+
+Si necesitas permitir más de un origen (por ejemplo, el dominio de producción y el de preview), sepáralos con comas en `FRONTEND_ORIGINS`. En Render, usa como comando de inicio:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Render, por ejemplo `https://mi-api.onrender.com`, sin agregar `/docs` ni una ruta de API. Vite incorpora esta variable al compilar el frontend, así que vuelve a desplegarlo después de cambiarla. Para desarrollo local, usa `VITE_API_BASE_URL=http://localhost:8000` en el entorno del frontend.
 
 ## Endpoints de avance
 
