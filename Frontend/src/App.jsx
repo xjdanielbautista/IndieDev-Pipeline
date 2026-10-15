@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import ApiStatus from "./components/ApiStatus";
+import { API_BASE_URL } from "./config/api";
 import { 
   Lock, Unlock, GitPullRequest, Code, Paintbrush, ArrowRight, 
   ArrowLeft, LogOut, FileImage, GitCommit, User, 
@@ -67,6 +69,12 @@ const COLUMNS = [
   { id: 'locked-assets', title: 'Bloqueo de Assets', color: 'text-[#FF3D00]', border: 'border-[#FF3D00]', isLock: true },
   { id: 'done', title: 'Terminado', color: 'text-[#00FF66]', border: 'border-[#00FF66]' }
 ];
+
+// Configuración de la conexión con el backend (se lee de Frontend/.env)
+const API_BASE = API_BASE_URL;
+const TENANT_ID = import.meta.env.VITE_TENANT_ID;
+const ASSET_ID = import.meta.env.VITE_ASSET_ID;
+const USER_ID = import.meta.env.VITE_USER_ID;
 
 const TaskCard = ({ task, onMove, onToggleLock }) => {
   const isCode = task.type === 'code';
@@ -196,11 +204,6 @@ export default function App() {
     }));
   };
 
-   const API_BASE = import.meta.env.VITE_API_BASE_URL;
-  const TENANT_ID = import.meta.env.VITE_TENANT_ID;
-  const ASSET_ID = import.meta.env.VITE_ASSET_ID;
-  const USER_ID = import.meta.env.VITE_USER_ID;
-
   const handleToggleLock = async (taskId) => {
     const task = tasks.find(t => t.id === taskId);
     const isCurrentlyLocked = task.isLocked;
@@ -218,11 +221,11 @@ export default function App() {
             });
 
         if (!response.ok) {
-          const error = await response.json();
-          alert(`Error del backend: ${error.detail}`);
+          const error = await response.json().catch(() => ({}));
+          alert(`Error del backend: ${error.detail || response.status}`);
           return;
         }
-      } catch (err) {
+      } catch {
         alert('No se pudo conectar con el backend. ¿Sigue corriendo uvicorn?');
         return;
       }
@@ -293,6 +296,10 @@ export default function App() {
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
             </button>
           </form>
+
+          <div className="mt-6 text-center text-xs font-mono text-gray-400">
+            <ApiStatus />
+          </div>
         </div>
       </div>
     );
@@ -314,6 +321,9 @@ export default function App() {
         </div>
 
         <div className="flex items-center space-x-4">
+          <div className="hidden md:block text-xs font-mono text-gray-400">
+            <ApiStatus />
+          </div>
           <div className="hidden md:flex items-center space-x-2 bg-[#0B0D14] border border-[#272B3B] px-3 py-1 rounded text-xs font-mono text-gray-400">
             <span className="w-2 h-2 rounded-full bg-[#00FF66] animate-pulse"></span>
             <span>Build: v0.9.4-rc2</span>
@@ -349,7 +359,7 @@ export default function App() {
             const columnTasks = tasks.filter(t => t.status === col.id);
             
             return (
-             <div key={col.id} className={`flex flex-col h-full bg-[#151822]/60 border ${col.isLock ? 'border-[#FF3D00]/30 shadow-[0_0_15px_rgba(255,61,0,0.1)]' : 'border-[#272B3B]'} rounded-lg`}>
+              <div key={col.id} className={`flex flex-col h-full bg-[#151822]/60 border ${col.isLock ? 'border-[#FF3D00]/30 shadow-[0_0_15px_rgba(255,61,0,0.1)]' : 'border-[#272B3B]'} rounded-lg`}>
                 <div className={`p-3 border-b flex items-center justify-between bg-[#151822] rounded-t-lg ${col.isLock ? 'border-[#FF3D00]/30' : 'border-[#272B3B]'}`}>
                   <div className="flex items-center space-x-2">
                     {col.isLock ? (
