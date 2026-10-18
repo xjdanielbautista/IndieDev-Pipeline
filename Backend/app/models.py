@@ -62,6 +62,9 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # Nullable so existing users can be migrated and assigned credentials later.
+    username: Mapped[str | None] = mapped_column(String(50), unique=True, index=True, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class Membership(Base):
