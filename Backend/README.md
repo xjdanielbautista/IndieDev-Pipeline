@@ -8,7 +8,7 @@ API REST inicial para la plataforma SaaS multi-tenant de gestión de estudios in
 - Registro de usuarios con nombre de usuario, correo y contraseña protegida mediante hash Argon2; inicio de sesión con token Bearer JWT.
 - Proyectos y tareas Kanban, clasificadas por fase (preproducción, alpha, beta y testing) y área de trabajo.
 - Registro de builds con versión, notas, estado y URL opcional.
-- Registro de metadatos de assets y bloqueo/liberación para evitar ediciones simultáneas.
+- Assets clasificados como `code` (Código) o `art` (Arte), con estados Kanban, asignación abierta o restringida a varios integrantes, bloqueo e historial de cambios.
 - Las rutas privadas requieren token y validan que el usuario pertenezca al tenant consultado.
 - Documentación interactiva de endpoints en `/docs`.
 
@@ -74,7 +74,7 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-Ejecuta `alembic upgrade head` con la misma `DATABASE_URL` que usará la API. La migración agrega las columnas de autenticación a una tabla `users` existente. Las tablas que falten se crean al iniciar la aplicación.
+Ejecuta `alembic upgrade head` con la misma `DATABASE_URL` que usará la API. Las migraciones agregan los campos de autenticación y de gestión de assets a las tablas existentes. Las tablas que falten se crean al iniciar la aplicación.
 
 ### Autenticación
 
@@ -101,6 +101,7 @@ Como el backend está en la carpeta `Backend`, configura esa carpeta como **Root
 - `FRONTEND_ORIGINS`: dominio del frontend publicado en Vercel, por ejemplo `https://mi-proyecto.vercel.app`. No agregues una ruta como `/dashboard`.
 - `SECRET_KEY`: valor aleatorio generado con `openssl rand -hex 32`; guárdalo como secreto y no lo compartas.
 - `ACCESS_TOKEN_EXPIRE_MINUTES`: duración opcional del token en minutos (30 por defecto).
+- `ASSET_STORAGE_PROVIDER`: proveedor que configura el backend (`firebase`, `s3` o `local`); no lo elige ni lo envía el usuario de la página.
 
 Si necesitas permitir más de un origen (por ejemplo, el dominio de producción y el de preview), sepáralos con comas en `FRONTEND_ORIGINS`. En Render, usa como comando de inicio:
 
@@ -108,7 +109,7 @@ Si necesitas permitir más de un origen (por ejemplo, el dominio de producción 
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Antes de arrancar la nueva versión contra una base de datos existente, ejecuta `alembic upgrade head` con la `DATABASE_URL` configurada en Render para agregar las columnas de autenticación.
+Antes de arrancar la nueva versión contra una base de datos existente, ejecuta `alembic upgrade head` con la `DATABASE_URL` configurada en Render para aplicar las migraciones pendientes de autenticación y assets.
 
 En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Render, por ejemplo `https://mi-api.onrender.com`, sin agregar `/docs` ni una ruta de API. Vite incorpora esta variable al compilar el frontend, así que vuelve a desplegarlo después de cambiarla. Para desarrollo local, usa `VITE_API_BASE_URL=http://localhost:8000` en el entorno del frontend.
 
@@ -117,14 +118,40 @@ En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Ren
 - `POST /api/auth/register`, `POST /api/auth/token` y `GET /api/auth/me`: registro, inicio de sesión y consulta del usuario autenticado.
 - `POST /api/tenants`: crea un estudio para el usuario autenticado; requiere `name` y `slug`.
 - `GET /api/tenants/{tenant_id}`: consulta un estudio si el usuario pertenece a él.
+- `GET /api/tenants/{tenant_id}/members`: lista los IDs y nombres de usuario de integrantes del estudio para seleccionar asignados.
 - `POST`, `GET /api/tenants/{tenant_id}/projects`: alta y consulta de proyectos.
 - `POST`, `GET /api/tenants/{tenant_id}/projects/{project_id}/tasks`: alta y consulta de tareas.
 - `POST`, `GET /api/tenants/{tenant_id}/projects/{project_id}/builds`: registro e historial de builds.
-- `POST /api/tenants/{tenant_id}/projects/{project_id}/assets`: registra los metadatos de un asset.
-- `PATCH /api/tenants/{tenant_id}/assets/{asset_id}/lock` y `DELETE .../lock`: bloquea y libera assets.
+- `POST /api/tenants/{tenant_id}/projects/{project_id}/assets`: registra metadatos y permite enviar `category`, `status`, `assignment_mode` y `assigned_user_ids`. `storage_provider` se configura en el backend y no forma parte de la solicitud. Por defecto, categoría `art`, estado `backlog`, modo `open` y sin lista de asignados.
+- `GET /api/tenants/{tenant_id}/projects/{project_id}/assets`: lista los assets de un proyecto.
+- `GET /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}`: consulta un asset por ID; devuelve categoría, estado, creador, integrante asignado y datos del bloqueo.
+- `PATCH /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}`: actualiza `category`, `status`, `assignment_mode` o la lista `assigned_user_ids`.
+- `GET /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/history`: devuelve los eventos con acción, usuario y fecha.
+- `PATCH /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/lock` y `DELETE .../lock`: bloquea y libera assets; el bloqueo queda registrado en el historial.
+
+Los valores permitidos para `category` son `code` (Código) y `art` (Arte). Los valores de `status` son `backlog` (Backlog), `in_progress` (En proceso), `review` (Revisión) y `done` (Terminado). `assignment_mode` acepta `open` o `restricted`: en modo abierto cualquier integrante del estudio puede cambiar el estado; en modo restringido solo pueden hacerlo los usuarios incluidos en `assigned_user_ids`. Esa lista puede contener varios IDs y cada usuario debe pertenecer al mismo estudio. La base los relaciona mediante `asset_assignments`, de modo que cada usuario puede estar asignado a varios assets y cada asset a varios usuarios. El bloqueo es independiente del flujo Kanban. La respuesta incluye `assigned_users` con ID y nombre de usuario; el historial conserva quién realizó cada cambio y cuándo.
+
+`storage_key` es la clave interna/ruta que usa el backend para localizar el archivo en el proveedor configurado. Actualmente se guardan metadatos; la subida binaria a Firebase/S3 aún no está implementada. El cliente de la página no debe pedirle al usuario que elija un proveedor.
+
+Ejemplo de creación para trabajo abierto:
+
+```json
+{
+  "original_name": "personaje.fbx",
+  "storage_key": "studios/mi-estudio/assets/personaje.fbx",
+  "category": "art",
+  "status": "backlog",
+  "assignment_mode": "open",
+  "assigned_user_ids": []
+}
+```
+
+Para limitar el avance a dos integrantes, usa `"assignment_mode": "restricted"` y `"assigned_user_ids": [2, 5]` con IDs reales de miembros del estudio.
+
+Las migraciones asignan `art`, `backlog` y el modo `open` a los assets existentes. Si un asset tenía un usuario asignado con el esquema anterior, esa asignación se conserva en la tabla nueva. No inventan creador ni eventos anteriores; el historial comienza a partir de su implementación.
 
 ## Pendiente
 
-La autenticación base y la comprobación de membresía están implementadas. Aún falta aplicar permisos específicos según cada rol (RBAC), verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. La migración de Alembic incluida cubre las nuevas columnas de autenticación; todavía falta versionar con migraciones el esquema completo del proyecto. También faltan la recepción/verificación de webhooks de GitHub y la subida binaria a Firebase/S3.
+La autenticación base, comprobación de membresía y restricción de avance de assets están implementadas. Aún falta aplicar permisos específicos según cada rol (RBAC), verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub y la subida binaria a Firebase/S3.
 
-El frontend todavía debe enviar las credenciales al endpoint de autenticación, conservar y adjuntar el token Bearer en las rutas privadas y dejar de usar IDs de usuario fijos para el bloqueo de assets.
+El frontend todavía debe enviar las credenciales al endpoint de autenticación, conservar y adjuntar el token Bearer en las rutas privadas, consultar los integrantes para asignar assets y dejar de usar IDs de usuario fijos para el bloqueo.

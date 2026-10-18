@@ -2,7 +2,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from .models import BuildStatus, StorageProvider, TaskArea, TaskStage, TaskStatus
+from .models import (
+    AssetCategory,
+    AssetAssignmentMode,
+    AssetStatus,
+    BuildStatus,
+    TaskArea,
+    TaskStage,
+    TaskStatus,
+)
 
 
 class TenantCreate(BaseModel):
@@ -88,7 +96,24 @@ class BuildRead(BuildCreate):
 class AssetCreate(BaseModel):
     original_name: str = Field(min_length=1, max_length=255)
     storage_key: str = Field(min_length=1, max_length=500)
-    storage_provider: StorageProvider
+    category: AssetCategory = AssetCategory.ART
+    status: AssetStatus = AssetStatus.BACKLOG
+    assignment_mode: AssetAssignmentMode = AssetAssignmentMode.OPEN
+    assigned_user_ids: list[int] = Field(default_factory=list)
+
+
+class AssetUpdate(BaseModel):
+    category: AssetCategory | None = None
+    status: AssetStatus | None = None
+    assignment_mode: AssetAssignmentMode | None = None
+    assigned_user_ids: list[int] | None = None
+
+
+class UserSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str | None
 
 
 class AssetRead(AssetCreate):
@@ -97,8 +122,25 @@ class AssetRead(AssetCreate):
     id: int
     tenant_id: int
     project_id: int
+    created_by_user_id: int | None
+    created_by: UserSummary | None
+    assigned_users: list[UserSummary]
     locked_by_user_id: int | None
     locked_at: datetime | None
+    created_at: datetime
+
+
+class AssetHistoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int
+    asset_id: int
+    user_id: int | None
+    actor_username: str
+    action: str
+    previous_value: str | None
+    new_value: str | None
     created_at: datetime
 
 

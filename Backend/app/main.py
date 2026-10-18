@@ -9,11 +9,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import Asset, Build, MemberRole, Membership, Project, Task, Tenant, User
+from .models import (
+    Asset,
+    AssetAssignment,
+    AssetAssignmentMode,
+    AssetHistory,
+    Build,
+    MemberRole,
+    Membership,
+    Project,
+    StorageProvider,
+    Task,
+    Tenant,
+    User,
+)
 from .schemas import (
     AssetCreate,
+    AssetHistoryRead,
     AssetLock,
     AssetRead,
+    AssetUpdate,
     BuildCreate,
     BuildRead,
     ProjectCreate,
@@ -25,6 +40,7 @@ from .schemas import (
     Token,
     UserRead,
     UserRegister,
+    UserSummary,
 )
 from .security import (
     create_access_token,
@@ -81,6 +97,27 @@ def get_project(db: Session, tenant_id: int, project_id: int) -> Project:
     if project is None:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     return project
+
+
+def record_asset_change(
+    db: Session,
+    asset: Asset,
+    actor: User,
+    action: str,
+    previous_value: str | None = None,
+    new_value: str | None = None,
+) -> None:
+    db.add(
+        AssetHistory(
+            tenant_id=asset.tenant_id,
+            asset_id=asset.id,
+            user_id=actor.id,
+            actor_username=(actor.username or actor.email)[:50],
+            action=action,
+            previous_value=previous_value,
+            new_value=new_value,
+        )
+    )
 
 
 @app.get("/health")
@@ -176,6 +213,21 @@ def get_tenant(
     if tenant is None:
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
     return tenant
+
+
+@app.get("/api/tenants/{tenant_id}/members", response_model=list[UserSummary])
+def list_tenant_members(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    return db.scalars(
+        select(User)
+        .join(Membership, Membership.user_id == User.id)
+        .where(Membership.tenant_id == tenant_id)
+        .order_by(User.username, User.id)
+    ).all()
 
 
 @app.post(
@@ -301,50 +353,270 @@ def create_asset(
 ):
     require_tenant_membership(db, tenant_id, current_user.id)
     get_project(db, tenant_id, project_id)
-    asset = Asset(tenant_id=tenant_id, project_id=project_id, **payload.model_dump())
+    assigned_user_ids = list(dict.fromkeys(payload.assigned_user_ids))
+    if payload.assignment_mode == AssetAssignmentMode.RESTRICTED and not assigned_user_ids:
+        raise HTTPException(status_code=422, detail="El modo restringido requiere al menos un integrante asignado")
+    for assigned_user_id in assigned_user_ids:
+        require_tenant_membership(db, tenant_id, assigned_user_id)
+    asset_fields = payload.model_dump(exclude={"assigned_user_ids"})
+    provider_name = os.getenv("ASSET_STORAGE_PROVIDER", StorageProvider.FIREBASE.value).lower()
+    try:
+        storage_provider = StorageProvider(provider_name)
+    except ValueError as error:
+        raise HTTPException(status_code=500, detail="ASSET_STORAGE_PROVIDER no es válido") from error
+    asset = Asset(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        created_by_user_id=current_user.id,
+        storage_provider=storage_provider,
+        **asset_fields,
+    )
+    asset.assignments.extend(AssetAssignment(user_id=user_id) for user_id in assigned_user_ids)
     db.add(asset)
+    db.flush()
+    record_asset_change(
+        db,
+        asset,
+        current_user,
+        "created",
+        new_value=(
+            f"category={asset.category}; status={asset.status}; "
+            f"assignment_mode={asset.assignment_mode}"
+        ),
+    )
+    if assigned_user_ids:
+        users = db.scalars(select(User).where(User.id.in_(assigned_user_ids))).all()
+        names = [user.username or user.email for user in users]
+        record_asset_change(db, asset, current_user, "assigned", new_value=", ".join(names))
     db.commit()
     db.refresh(asset)
     return asset
 
 
+@app.get(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets",
+    response_model=list[AssetRead],
+)
+def list_assets(
+    tenant_id: int,
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    get_project(db, tenant_id, project_id)
+    return db.scalars(
+        select(Asset).where(Asset.tenant_id == tenant_id, Asset.project_id == project_id)
+    ).all()
+
+
+@app.get(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}",
+    response_model=AssetRead,
+)
+def get_asset(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    return asset
+
+
 @app.patch(
-    "/api/tenants/{tenant_id}/assets/{asset_id}/lock",
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}",
+    response_model=AssetRead,
+)
+def update_asset(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    payload: AssetUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+
+    changes = payload.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] is not None:
+        if (
+            asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value
+            and current_user.id not in asset.assigned_user_ids
+        ):
+            raise HTTPException(status_code=403, detail="Solo los integrantes asignados pueden avanzar este asset")
+    if "category" in changes:
+        if changes["category"] is None:
+            raise HTTPException(status_code=422, detail="La categoría no puede ser nula")
+        new_category = changes["category"].value
+        if new_category != asset.category:
+            record_asset_change(db, asset, current_user, "category_changed", asset.category, new_category)
+            asset.category = new_category
+    if "status" in changes:
+        if changes["status"] is None:
+            raise HTTPException(status_code=422, detail="El estado no puede ser nulo")
+        new_status = changes["status"].value
+        if new_status != asset.status:
+            record_asset_change(db, asset, current_user, "status_changed", asset.status, new_status)
+            asset.status = new_status
+    if "assignment_mode" in changes:
+        if changes["assignment_mode"] is None:
+            raise HTTPException(status_code=422, detail="El modo de asignación no puede ser nulo")
+        new_mode = changes["assignment_mode"].value
+        if new_mode != asset.assignment_mode:
+            record_asset_change(
+                db, asset, current_user, "assignment_mode_changed", asset.assignment_mode, new_mode
+            )
+            asset.assignment_mode = new_mode
+    if "assigned_user_ids" in changes:
+        new_ids = changes["assigned_user_ids"]
+        if new_ids is None:
+            raise HTTPException(status_code=422, detail="La lista de integrantes asignados no puede ser nula")
+        new_ids = list(dict.fromkeys(new_ids))
+        for assigned_user_id in new_ids:
+            require_tenant_membership(db, tenant_id, assigned_user_id)
+        old_ids = set(asset.assigned_user_ids)
+        new_id_set = set(new_ids)
+        if old_ids != new_id_set:
+            all_ids = old_ids | new_id_set
+            users = db.scalars(select(User).where(User.id.in_(all_ids))).all() if all_ids else []
+            names = {user.id: user.username or user.email for user in users}
+            added_names = [names[user_id] for user_id in new_id_set - old_ids]
+            removed_names = [names[user_id] for user_id in old_ids - new_id_set]
+            record_asset_change(
+                db,
+                asset,
+                current_user,
+                "assignments_changed",
+                previous_value=", ".join(removed_names) or None,
+                new_value=", ".join(added_names) or None,
+            )
+            asset.assignments.clear()
+            asset.assignments.extend(AssetAssignment(user_id=user_id) for user_id in new_ids)
+    if asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value and not asset.assigned_user_ids:
+        raise HTTPException(status_code=422, detail="El modo restringido requiere al menos un integrante asignado")
+
+    db.commit()
+    db.refresh(asset)
+    return asset
+
+
+@app.get(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/history",
+    response_model=list[AssetHistoryRead],
+)
+def list_asset_history(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    return db.scalars(
+        select(AssetHistory)
+        .where(AssetHistory.tenant_id == tenant_id, AssetHistory.asset_id == asset_id)
+        .order_by(AssetHistory.created_at.desc(), AssetHistory.id.desc())
+    ).all()
+
+
+@app.patch(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/lock",
     response_model=AssetRead,
 )
 def lock_asset(
     tenant_id: int,
+    project_id: int,
     asset_id: int,
     _: AssetLock,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_tenant_membership(db, tenant_id, current_user.id)
-    asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.tenant_id == tenant_id))
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset no encontrado")
     if asset.locked_by_user_id is not None and asset.locked_by_user_id != current_user.id:
         raise HTTPException(status_code=409, detail="El asset ya está bloqueado")
-    asset.locked_by_user_id = current_user.id
-    asset.locked_at = datetime.now(timezone.utc)
+    if asset.locked_by_user_id is None:
+        record_asset_change(
+            db,
+            asset,
+            current_user,
+            "locked",
+            new_value=current_user.username or current_user.email,
+        )
+        asset.locked_by_user_id = current_user.id
+        asset.locked_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(asset)
     return asset
 
 
-@app.delete("/api/tenants/{tenant_id}/assets/{asset_id}/lock", response_model=AssetRead)
+@app.delete(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/lock",
+    response_model=AssetRead,
+)
 def unlock_asset(
     tenant_id: int,
+    project_id: int,
     asset_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_tenant_membership(db, tenant_id, current_user.id)
-    asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.tenant_id == tenant_id))
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset no encontrado")
     if asset.locked_by_user_id != current_user.id:
         raise HTTPException(status_code=409, detail="Solo quien bloqueó el asset puede liberarlo")
+    record_asset_change(
+        db,
+        asset,
+        current_user,
+        "unlocked",
+        previous_value=current_user.username or current_user.email,
+    )
     asset.locked_by_user_id = None
     asset.locked_at = None
     db.commit()
