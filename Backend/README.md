@@ -118,7 +118,11 @@ En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Ren
 - `POST /api/auth/register`, `POST /api/auth/token` y `GET /api/auth/me`: registro, inicio de sesión y consulta del usuario autenticado.
 - `POST /api/tenants`: crea un estudio para el usuario autenticado; requiere `name` y `slug`.
 - `GET /api/tenants/{tenant_id}`: consulta un estudio si el usuario pertenece a él.
-- `GET /api/tenants/{tenant_id}/members`: lista los IDs y nombres de usuario de integrantes del estudio para seleccionar asignados.
+- `GET /api/tenants`: lista los estudios del usuario autenticado con su rol en cada uno.
+- `GET /api/tenants/{tenant_id}/members`: lista integrantes con `id`, `username`, `email` y `role`.
+- `POST /api/tenants/{tenant_id}/members`: agrega un integrante con `{ "identifier": "<usuario o correo>", "role": "developer" }`. La cuenta debe existir.
+- `PATCH /api/tenants/{tenant_id}/members/{user_id}`: cambia el rol con `{ "role": "artist" }`.
+- `DELETE /api/tenants/{tenant_id}/members/{user_id}`: quita al integrante, sus asignaciones y los bloqueos que tenía en el estudio.
 - `POST`, `GET /api/tenants/{tenant_id}/projects`: alta y consulta de proyectos.
 - `POST`, `GET /api/tenants/{tenant_id}/projects/{project_id}/tasks`: alta y consulta de tareas.
 - `POST`, `GET /api/tenants/{tenant_id}/projects/{project_id}/builds`: registro e historial de builds.
@@ -150,8 +154,17 @@ Para limitar el avance a dos integrantes, usa `"assignment_mode": "restricted"` 
 
 Las migraciones asignan `art`, `backlog` y el modo `open` a los assets existentes. Si un asset tenía un usuario asignado con el esquema anterior, esa asignación se conserva en la tabla nueva. No inventan creador ni eventos anteriores; el historial comienza a partir de su implementación.
 
+## Roles y permisos
+
+Las reglas están en `app/permissions.py`:
+
+- `owner` (dueño) y `admin`: crean proyectos, tareas (`tasks` y `assets`), asignan integrantes y cambian `category`, `assignment_mode` y `assigned_user_ids`; mueven cualquier asset y pueden liberar bloqueos de otros. Solo el dueño nombra o quita admins; nadie puede asignar el rol `owner` ni cambiar o quitar al dueño.
+- `developer`: mueve y bloquea assets `code`; registra builds.
+- `artist`: mueve y bloquea assets `art`.
+- `tester`: solo puede cambiar `status` de `review` a `done` o `in_progress`, y de `done` a `review`.
+
+El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño y admin pueden mover cualquier asset. Las pruebas de estas reglas están en `tests/test_roles.py` (`pytest` desde la carpeta `Backend`, con `requirements-dev.txt`).
+
 ## Pendiente
 
-La autenticación base, comprobación de membresía y restricción de avance de assets están implementadas. Aún falta aplicar permisos específicos según cada rol (RBAC), verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub y la subida binaria a Firebase/S3.
-
-El frontend todavía debe enviar las credenciales al endpoint de autenticación, conservar y adjuntar el token Bearer en las rutas privadas, consultar los integrantes para asignar assets y dejar de usar IDs de usuario fijos para el bloqueo.
+Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub y la subida binaria a Firebase/S3.

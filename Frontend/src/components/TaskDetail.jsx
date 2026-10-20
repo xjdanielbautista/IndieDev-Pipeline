@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { History, Lock, RotateCcw, Unlock, Users, X } from "lucide-react";
 import { getAssetHistory, lockAsset, unlockAsset, updateAsset } from "../api/studio";
 import { CATEGORIES, STATUSES, describeChange, formatDateTime, timeAgo } from "../utils/labels";
+import { canLock, canMove, isManager } from "../utils/permissions";
 import { Avatar, inputClass, Label, useToast } from "./ui";
 
 const UNDO_LIMIT = 3;
@@ -34,8 +35,9 @@ function buildRevert(entry, asset, members) {
   }
 }
 
-export default function TaskDetail({ asset, tenant, projectId, members, currentUser, onChanged, onClose }) {
+export default function TaskDetail({ asset, tenant, projectId, members, currentUser, role, onChanged, onClose }) {
   const notify = useToast();
+  const manager = isManager(role);
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -95,7 +97,12 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
 
   // Los últimos 3 cambios que se pueden restaurar.
   const undoable = history.filter((h) => REVERTIBLE.includes(h.action)).slice(0, UNDO_LIMIT);
-  const undoableIds = new Set(undoable.map((h) => h.id));
+  // Restaurar el estado sigue las reglas de mover; los demás campos solo dueño/admin.
+  const canRestore = (entry) =>
+    entry.action === "status_changed"
+      ? canMove(role, asset, entry.previous_value, currentUser?.id)
+      : manager;
+  const undoableIds = new Set(undoable.filter(canRestore).map((h) => h.id));
 
   const restore = (entry) => {
     const changes = buildRevert(entry, asset, members);
@@ -145,7 +152,11 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
                 onChange={(e) => patch({ status: e.target.value })}
               >
                 {STATUSES.map((s) => (
-                  <option key={s.id} value={s.id}>
+                  <option
+                    key={s.id}
+                    value={s.id}
+                    disabled={s.id !== asset.status && !canMove(role, asset, s.id, currentUser?.id)}
+                  >
                     {s.label}
                   </option>
                 ))}
@@ -156,7 +167,7 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
               <select
                 className={inputClass}
                 value={asset.category}
-                disabled={busy}
+                disabled={busy || !manager}
                 onChange={(e) => patch({ category: e.target.value })}
               >
                 {Object.entries(CATEGORIES).map(([id, c]) => (
@@ -178,19 +189,20 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
                   type="checkbox"
                   className="accent-[#00F0FF]"
                   checked={asset.assignment_mode === "restricted"}
-                  disabled={busy}
+                  disabled={busy || !manager}
                   onChange={(e) => patch({ assignment_mode: e.target.checked ? "restricted" : "open" })}
                 />
                 Solo ellos pueden moverla
               </label>
             </div>
+            {!manager && <p className="text-xs text-gray-500 mb-2">Solo el dueño o un admin pueden cambiar los asignados.</p>}
             <div className="flex flex-wrap gap-2">
               {members.map((m) => {
                 const active = asset.assigned_user_ids.includes(m.id);
                 return (
                   <button
                     key={m.id}
-                    disabled={busy}
+                    disabled={busy || !manager}
                     onClick={() => toggleAssignee(m.id)}
                     className={`flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border text-sm transition-colors disabled:opacity-60 ${
                       active ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white" : "border-[#272B3B] text-gray-500 hover:text-white"
@@ -209,12 +221,16 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
               <p className="text-white font-medium">Bloqueo de archivo</p>
               <p className="text-xs text-gray-500">
                 {isLocked
-                  ? `Bloqueado por ${lockedByMe ? "ti" : lockedByName} ${timeAgo(asset.locked_at)}`
-                  : "Bloquéalo mientras lo editas para que nadie más lo modifique."}
+                  ? `Bloqueado por ${lockedByMe ? "ti" : lockedByName} ${timeAgo(asset.locked_at)}${
+                      !lockedByMe && manager ? ". Como dueño/admin puedes liberarlo." : ""
+                    }`
+                  : canLock(role, asset.category)
+                    ? "Bloquéalo mientras lo editas para que nadie más lo modifique."
+                    : "Tu rol no puede bloquear archivos de este tipo."}
               </p>
             </div>
             <button
-              disabled={busy || (isLocked && !lockedByMe)}
+              disabled={busy || (isLocked ? !lockedByMe && !manager : !canLock(role, asset.category))}
               onClick={toggleLock}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
                 isLocked ? "bg-[#FF3D00]/15 text-[#FF3D00] hover:bg-[#FF3D00]/25" : "bg-[#1C202D] text-gray-200 hover:bg-[#272B3B]"

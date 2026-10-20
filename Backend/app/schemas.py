@@ -114,6 +114,22 @@ class AssetUpdate(BaseModel):
     assigned_user_ids: list[int] | None = None
 
 
+class MemberRead(BaseModel):
+    id: int
+    username: str | None
+    email: str
+    role: MemberRole
+
+
+class MemberAdd(BaseModel):
+    identifier: str = Field(min_length=3, max_length=255, description="Nombre de usuario o correo")
+    role: MemberRole = MemberRole.DEVELOPER
+
+
+class MemberRoleUpdate(BaseModel):
+    role: MemberRole
+
+
 class UserSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

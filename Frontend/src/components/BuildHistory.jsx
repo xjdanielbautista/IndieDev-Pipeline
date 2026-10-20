@@ -11,12 +11,14 @@ export default function BuildHistory({ builds, onNew }) {
           <h2 className="text-lg font-semibold text-white">Historial de builds</h2>
           <p className="text-xs text-gray-500">Versiones compiladas del juego, de la más reciente a la más antigua.</p>
         </div>
+        {onNew && (
         <button
           onClick={onNew}
           className="flex items-center gap-2 bg-[#00F0FF] hover:bg-cyan-300 text-black font-semibold rounded-lg px-3 py-2 text-sm"
         >
           <Plus className="w-4 h-4" /> Registrar build
         </button>
+        )}
       </div>
 
       {sorted.length === 0 ? (

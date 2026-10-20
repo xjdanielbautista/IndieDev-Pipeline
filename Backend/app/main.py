@@ -31,6 +31,9 @@ from .schemas import (
     AssetUpdate,
     BuildCreate,
     BuildRead,
+    MemberAdd,
+    MemberRead,
+    MemberRoleUpdate,
     ProjectCreate,
     ProjectRead,
     TaskCreate,
@@ -41,7 +44,14 @@ from .schemas import (
     Token,
     UserRead,
     UserRegister,
-    UserSummary,
+)
+from .permissions import (
+    is_manager,
+    require_build_role,
+    require_can_lock,
+    require_can_manage_member,
+    require_can_move,
+    require_manager,
 )
 from .security import (
     create_access_token,
@@ -235,19 +245,110 @@ def get_tenant(
     return tenant
 
 
-@app.get("/api/tenants/{tenant_id}/members", response_model=list[UserSummary])
+def member_read(user: User, role: MemberRole) -> MemberRead:
+    return MemberRead(id=user.id, username=user.username, email=user.email, role=role)
+
+
+def get_member(db: Session, tenant_id: int, user_id: int) -> Membership:
+    membership = db.scalar(
+        select(Membership).where(Membership.tenant_id == tenant_id, Membership.user_id == user_id)
+    )
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Ese usuario no es integrante del estudio")
+    return membership
+
+
+@app.get("/api/tenants/{tenant_id}/members", response_model=list[MemberRead])
 def list_tenant_members(
     tenant_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_tenant_membership(db, tenant_id, current_user.id)
-    return db.scalars(
-        select(User)
+    rows = db.execute(
+        select(User, Membership.role)
         .join(Membership, Membership.user_id == User.id)
         .where(Membership.tenant_id == tenant_id)
         .order_by(User.username, User.id)
     ).all()
+    return [member_read(user, role) for user, role in rows]
+
+
+@app.post(
+    "/api/tenants/{tenant_id}/members",
+    response_model=MemberRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_tenant_member(
+    tenant_id: int,
+    payload: MemberAdd,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    actor = require_tenant_membership(db, tenant_id, current_user.id)
+    require_can_manage_member(actor, None, payload.role)
+    identifier = payload.identifier.strip().lower()
+    user = db.scalar(
+        select(User).where(
+            or_(func.lower(User.username) == identifier, func.lower(User.email) == identifier)
+        )
+    )
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No existe una cuenta con ese usuario o correo. Pídele que se registre primero.",
+        )
+    exists = db.scalar(
+        select(Membership).where(Membership.tenant_id == tenant_id, Membership.user_id == user.id)
+    )
+    if exists is not None:
+        raise HTTPException(status_code=409, detail="Ese usuario ya es integrante del estudio")
+    db.add(Membership(tenant_id=tenant_id, user_id=user.id, role=payload.role))
+    db.commit()
+    return member_read(user, payload.role)
+
+
+@app.patch("/api/tenants/{tenant_id}/members/{user_id}", response_model=MemberRead)
+def update_tenant_member(
+    tenant_id: int,
+    user_id: int,
+    payload: MemberRoleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    actor = require_tenant_membership(db, tenant_id, current_user.id)
+    target = get_member(db, tenant_id, user_id)
+    require_can_manage_member(actor, target, payload.role)
+    target.role = payload.role
+    db.commit()
+    return member_read(db.get(User, user_id), payload.role)
+
+
+@app.delete("/api/tenants/{tenant_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_tenant_member(
+    tenant_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    actor = require_tenant_membership(db, tenant_id, current_user.id)
+    target = get_member(db, tenant_id, user_id)
+    require_can_manage_member(actor, target, None)
+    tenant_asset_ids = select(Asset.id).where(Asset.tenant_id == tenant_id)
+    # Quita sus asignaciones y libera los archivos que tenía bloqueados en este estudio.
+    for assignment in db.scalars(
+        select(AssetAssignment).where(
+            AssetAssignment.user_id == user_id, AssetAssignment.asset_id.in_(tenant_asset_ids)
+        )
+    ).all():
+        db.delete(assignment)
+    for asset in db.scalars(
+        select(Asset).where(Asset.tenant_id == tenant_id, Asset.locked_by_user_id == user_id)
+    ).all():
+        asset.locked_by_user_id = None
+        asset.locked_at = None
+    db.delete(target)
+    db.commit()
 
 
 @app.post(
@@ -261,7 +362,8 @@ def create_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "crear proyectos")
     if db.get(Tenant, tenant_id) is None:
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
     project = Project(tenant_id=tenant_id, **payload.model_dump())
@@ -295,7 +397,8 @@ def create_task(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "crear tareas")
     get_project(db, tenant_id, project_id)
     task = Task(tenant_id=tenant_id, project_id=project_id, **payload.model_dump())
     db.add(task)
@@ -333,7 +436,8 @@ def create_build(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_build_role(membership)
     get_project(db, tenant_id, project_id)
     build = Build(tenant_id=tenant_id, project_id=project_id, **payload.model_dump())
     db.add(build)
@@ -371,7 +475,8 @@ def create_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "crear y asignar tareas")
     get_project(db, tenant_id, project_id)
     assigned_user_ids = list(dict.fromkeys(payload.assigned_user_ids))
     if payload.assignment_mode == AssetAssignmentMode.RESTRICTED and not assigned_user_ids:
@@ -466,7 +571,7 @@ def update_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
     asset = db.scalar(
         select(Asset).where(
             Asset.id == asset_id,
@@ -478,9 +583,13 @@ def update_asset(
         raise HTTPException(status_code=404, detail="Asset no encontrado")
 
     changes = payload.model_dump(exclude_unset=True)
+    if any(field in changes for field in ("category", "assignment_mode", "assigned_user_ids")):
+        require_manager(membership, "cambiar el tipo o los asignados de una tarea")
     if "status" in changes and changes["status"] is not None:
+        require_can_move(membership, asset.category, asset.status, changes["status"].value)
         if (
-            asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value
+            not is_manager(membership)
+            and asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value
             and current_user.id not in asset.assigned_user_ids
         ):
             raise HTTPException(status_code=403, detail="Solo los integrantes asignados pueden avanzar este asset")
@@ -580,7 +689,7 @@ def lock_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
     asset = db.scalar(
         select(Asset).where(
             Asset.id == asset_id,
@@ -590,6 +699,7 @@ def lock_asset(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset no encontrado")
+    require_can_lock(membership, asset.category)
     if asset.locked_by_user_id is not None and asset.locked_by_user_id != current_user.id:
         raise HTTPException(status_code=409, detail="El asset ya está bloqueado")
     if asset.locked_by_user_id is None:
@@ -618,7 +728,7 @@ def unlock_asset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_tenant_membership(db, tenant_id, current_user.id)
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
     asset = db.scalar(
         select(Asset).where(
             Asset.id == asset_id,
@@ -628,14 +738,20 @@ def unlock_asset(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset no encontrado")
-    if asset.locked_by_user_id != current_user.id:
-        raise HTTPException(status_code=409, detail="Solo quien bloqueó el asset puede liberarlo")
+    if asset.locked_by_user_id is None:
+        raise HTTPException(status_code=409, detail="El asset no está bloqueado")
+    if asset.locked_by_user_id != current_user.id and not is_manager(membership):
+        raise HTTPException(
+            status_code=409,
+            detail="Solo quien bloqueó el asset (o el dueño/admin) puede liberarlo",
+        )
+    locker = db.get(User, asset.locked_by_user_id)
     record_asset_change(
         db,
         asset,
         current_user,
         "unlocked",
-        previous_value=current_user.username or current_user.email,
+        previous_value=(locker.username or locker.email) if locker else None,
     )
     asset.locked_by_user_id = None
     asset.locked_at = None

@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Table2 } from "lucide-react";
+import { Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Table2, Users } from "lucide-react";
 import ApiStatus from "./ApiStatus";
 import AssetVault from "./AssetVault";
 import BuildHistory from "./BuildHistory";
 import KanbanBoard from "./KanbanBoard";
 import TaskDetail from "./TaskDetail";
+import TeamPanel from "./TeamPanel";
 import { CreateBuildForm, CreateProjectForm, CreateStudioForm, CreateTaskForm } from "./forms";
 import { Avatar, Modal, useToast } from "./ui";
 import { listAssets, listBuilds, listMembers, listMyTenants, listProjects, updateAsset } from "../api/studio";
-import { CATEGORIES, ROLES, initials } from "../utils/labels";
+import { CATEGORIES, ROLES, initials, statusLabel } from "../utils/labels";
+import { canBuild, canMove, isManager } from "../utils/permissions";
 
 const REFRESH_MS = 30000; // recarga el tablero cada 30 s para ver cambios del equipo
 
@@ -33,6 +35,23 @@ const selectClass =
   "bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-md pl-2 pr-7 py-1.5 focus:outline-none focus:border-[#00F0FF] max-w-[240px]";
 
 function Onboarding({ step, tenant, onStudio, onProject, onLogout }) {
+  if (step === "project" && !isManager(tenant.role)) {
+    return (
+      <div className="min-h-screen bg-[#0B0D14] flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-[#151822] border border-[#272B3B] rounded-xl p-8 text-center">
+          <h1 className="text-xl font-bold text-white mb-2">{tenant.name} aún no tiene proyectos</h1>
+          <p className="text-sm text-gray-400 mb-6">Pídele al dueño o a un admin que cree el primero.</p>
+          <button onClick={() => window.location.reload()} className="text-sm text-[#00F0FF] hover:underline">
+            Volver a revisar
+          </button>
+          <button onClick={onLogout} className="block mx-auto mt-4 text-xs text-gray-500 hover:text-white">
+            Cerrar sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0B0D14] flex items-center justify-center p-4 relative overflow-hidden">
       <div className="absolute top-[10%] left-[20%] w-96 h-96 bg-[#00F0FF]/10 rounded-full blur-[120px] pointer-events-none" />
@@ -48,6 +67,14 @@ function Onboarding({ step, tenant, onStudio, onProject, onLogout }) {
             ? "Tu estudio agrupa a tu equipo y sus juegos. Si te van a invitar a uno existente, pídele al dueño que te agregue."
             : `Dentro de ${tenant?.name} cada juego tiene su propio tablero, archivos y builds.`}
         </p>
+        {step === "studio" && (
+          <button
+            onClick={() => window.location.reload()}
+            className="w-full mb-4 text-xs text-[#00F0FF] border border-[#00F0FF]/30 rounded-lg py-2 hover:bg-[#00F0FF]/10"
+          >
+            Ya me agregaron a un estudio, volver a revisar
+          </button>
+        )}
         {step === "studio" ? (
           <CreateStudioForm onCreated={onStudio} />
         ) : (
@@ -146,6 +173,10 @@ export default function Workspace({ currentUser, onLogout }) {
   const replaceAsset = (updated) => setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
 
   const changeStatus = async (asset, status) => {
+    if (!canMove(tenant?.role, asset, status, currentUser?.id)) {
+      notify(`Tu rol (${ROLES[tenant?.role] ?? tenant?.role}) no puede mover esta tarea a ${statusLabel(status)}.`);
+      return;
+    }
     const previous = asset;
     replaceAsset({ ...asset, status }); // movimiento inmediato en pantalla
     try {
@@ -210,7 +241,9 @@ export default function Workspace({ currentUser, onLogout }) {
     { id: "board", label: "Tablero Kanban", icon: FolderKanban },
     { id: "vault", label: "Asset Vault", icon: Table2 },
     { id: "builds", label: "Build History", icon: Package },
+    { id: "team", label: `Equipo (${members.length})`, icon: Users },
   ];
+  const manager = isManager(tenant.role);
   const latestBuild = [...builds].sort((a, b) => b.id - a.id)[0];
 
   return (
@@ -251,7 +284,7 @@ export default function Workspace({ currentUser, onLogout }) {
                   {p.name}
                 </option>
               ))}
-              <option value="new">+ Nuevo proyecto</option>
+              {manager && <option value="new">+ Nuevo proyecto</option>}
             </select>
           </div>
         </div>
@@ -302,7 +335,7 @@ export default function Workspace({ currentUser, onLogout }) {
           ))}
         </nav>
 
-        {tab !== "builds" && (
+        {(tab === "board" || tab === "vault") && (
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
               <Search className="absolute left-2.5 top-2 w-4 h-4 text-gray-500" />
@@ -344,12 +377,14 @@ export default function Workspace({ currentUser, onLogout }) {
             >
               <RefreshCw className={`w-4 h-4 ${loadingBoard ? "animate-spin" : ""}`} />
             </button>
-            <button
-              onClick={() => setModal("task")}
-              className="flex items-center gap-1.5 bg-[#00F0FF] hover:bg-cyan-300 text-black font-semibold rounded-md px-3 py-1.5 text-sm"
-            >
-              <Plus className="w-4 h-4" /> Nueva tarea
-            </button>
+            {manager && (
+              <button
+                onClick={() => setModal("task")}
+                className="flex items-center gap-1.5 bg-[#00F0FF] hover:bg-cyan-300 text-black font-semibold rounded-md px-3 py-1.5 text-sm"
+              >
+                <Plus className="w-4 h-4" /> Nueva tarea
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -359,13 +394,19 @@ export default function Workspace({ currentUser, onLogout }) {
           <div className="max-w-md mx-auto mt-16 text-center">
             <Code className="w-10 h-10 mx-auto text-[#00F0FF] mb-3" />
             <h2 className="text-white text-lg font-semibold mb-1">Tu tablero está vacío</h2>
-            <p className="text-sm text-gray-500 mb-5">Crea la primera tarea de {project.name} y asígnala a tu equipo.</p>
-            <button
-              onClick={() => setModal("task")}
-              className="inline-flex items-center gap-2 bg-[#00F0FF] hover:bg-cyan-300 text-black font-semibold rounded-lg px-4 py-2.5 text-sm"
-            >
-              <Plus className="w-4 h-4" /> Nueva tarea
-            </button>
+            {manager ? (
+              <>
+                <p className="text-sm text-gray-500 mb-5">Crea la primera tarea de {project.name} y asígnala a tu equipo.</p>
+                <button
+                  onClick={() => setModal("task")}
+                  className="inline-flex items-center gap-2 bg-[#00F0FF] hover:bg-cyan-300 text-black font-semibold rounded-lg px-4 py-2.5 text-sm"
+                >
+                  <Plus className="w-4 h-4" /> Nueva tarea
+                </button>
+              </>
+            ) : (
+              <p className="text-sm text-gray-500">El dueño o un admin todavía no crean tareas para {project.name}.</p>
+            )}
           </div>
         ) : tab === "board" ? (
           <>
@@ -377,14 +418,26 @@ export default function Workspace({ currentUser, onLogout }) {
             <KanbanBoard
               assets={filteredAssets}
               currentUser={currentUser}
+              canMoveTo={(asset, status) => canMove(tenant.role, asset, status, currentUser?.id)}
               onOpen={(a) => setOpenAssetId(a.id)}
               onChangeStatus={changeStatus}
             />
           </>
         ) : tab === "vault" ? (
           <AssetVault assets={filteredAssets} members={members} onOpen={(a) => setOpenAssetId(a.id)} />
+        ) : tab === "builds" ? (
+          <BuildHistory builds={builds} onNew={canBuild(tenant.role) ? () => setModal("build") : null} />
         ) : (
-          <BuildHistory builds={builds} onNew={() => setModal("build")} />
+          <TeamPanel
+            tenant={tenant}
+            members={members}
+            assets={assets}
+            currentUser={currentUser}
+            onMembersChange={(list) => {
+              setMembers(list);
+              loadBoard(true); // quitar a alguien libera sus tareas y bloqueos
+            }}
+          />
         )}
       </main>
 
@@ -395,6 +448,7 @@ export default function Workspace({ currentUser, onLogout }) {
           projectId={project.id}
           members={members}
           currentUser={currentUser}
+          role={tenant.role}
           onChanged={replaceAsset}
           onClose={() => setOpenAssetId(null)}
         />

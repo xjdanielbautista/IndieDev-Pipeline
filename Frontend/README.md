@@ -31,6 +31,7 @@ El estudio y el proyecto ya no se configuran con variables: se eligen (o se crea
 - **Filtros:** búsqueda por nombre o `#id`, por tipo y "Mis tareas".
 - **Asset Vault:** tabla con todas las tareas, su estado, asignados y bloqueo.
 - **Build History:** registro de versiones con estado, notas y URL; la última aparece en el encabezado.
+- **Equipo:** integrantes con su rol y sus tareas pendientes; agregar, cambiar rol o quitar (dueño/admin).
 
 ## Autenticación
 
@@ -66,12 +67,22 @@ Si la petición falla, lanza un error con el mensaje que manda el backend en `de
 - `src/utils/labels.js`: etiquetas en español, formato de fechas (el backend guarda UTC; se muestran en hora local).
 - `src/components/LoginScreen.jsx`: inicio de sesión y registro.
 - `src/components/Workspace.jsx`: encabezado, primeros pasos, filtros y pestañas.
-- `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `forms.jsx`, `ui.jsx`.
+- `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `TeamPanel.jsx`, `forms.jsx`, `ui.jsx`.
+- `src/utils/permissions.js`: reglas por rol para la interfaz.
 
-## Pendiente (necesita backend)
+## Roles y permisos
 
-- Invitar integrantes al estudio y cambiar su rol (por ahora solo el dueño aparece como integrante).
-- Permisos según el rol (dueño, admin, developer, artista, tester).
+En la pestaña **Equipo**, el dueño o un admin agregan integrantes (por usuario o correo; deben tener cuenta) y eligen su rol. La interfaz oculta o desactiva lo que cada rol no puede hacer, con las mismas reglas que valida el backend (`src/utils/permissions.js` es copia de `Backend/app/permissions.py`):
+
+| Rol | Puede |
+| --- | --- |
+| Dueño | Todo. Es el único que nombra o quita admins. |
+| Admin | Crear proyectos y tareas, asignar, cambiar cualquier campo, mover cualquier tarea, liberar bloqueos ajenos, administrar developers/artistas/testers. |
+| Developer | Mover y bloquear tareas de código; registrar builds. |
+| Artista | Mover y bloquear tareas de arte. |
+| Tester | Aprobar (Revisión → Terminado), regresar a En progreso o reabrir una terminada. |
+
+En modo restringido, solo los asignados pueden mover la tarea; dueño y admin siempre pueden.
 
 ## Despliegue (Vercel)
 

@@ -3,16 +3,19 @@ import { ArrowLeft, ArrowRight, CheckCircle2, Code, Lock, Paintbrush, ShieldChec
 import { CATEGORIES, STATUSES, timeAgo } from "../utils/labels";
 import { Avatar } from "./ui";
 
-function TaskCard({ asset, currentUser, onOpen, onMove, onDragStart }) {
+function TaskCard({ asset, currentUser, canMoveTo, onOpen, onMove, onDragStart }) {
   const category = CATEGORIES[asset.category] ?? CATEGORIES.art;
   const isCode = asset.category === "code";
   const isLocked = asset.locked_by_user_id !== null;
   const index = STATUSES.findIndex((s) => s.id === asset.status);
   const mine = asset.assigned_user_ids.includes(currentUser?.id);
+  const prev = STATUSES[index - 1];
+  const next = STATUSES[index + 1];
+  const canDrag = STATUSES.some((s) => canMoveTo(asset, s.id));
 
   return (
     <div
-      draggable
+      draggable={canDrag}
       onDragStart={(e) => onDragStart(e, asset)}
       onClick={() => onOpen(asset)}
       className={`relative rounded-lg p-3 mb-3 border bg-[#151822] cursor-pointer transition-all hover:bg-[#1C202D] hover:-translate-y-0.5 overflow-hidden ${
@@ -64,7 +67,7 @@ function TaskCard({ asset, currentUser, onOpen, onMove, onDragStart }) {
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <button
             onClick={() => onMove(asset, -1)}
-            disabled={index <= 0}
+            disabled={!prev || !canMoveTo(asset, prev.id)}
             aria-label="Mover a la izquierda"
             className="p-1 bg-gray-800 text-gray-400 rounded disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 hover:text-white"
           >
@@ -72,7 +75,7 @@ function TaskCard({ asset, currentUser, onOpen, onMove, onDragStart }) {
           </button>
           <button
             onClick={() => onMove(asset, 1)}
-            disabled={index >= STATUSES.length - 1}
+            disabled={!next || !canMoveTo(asset, next.id)}
             aria-label="Mover a la derecha"
             className="p-1 bg-gray-800 text-gray-400 rounded disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 hover:text-white"
           >
@@ -84,7 +87,7 @@ function TaskCard({ asset, currentUser, onOpen, onMove, onDragStart }) {
   );
 }
 
-export default function KanbanBoard({ assets, currentUser, onOpen, onChangeStatus }) {
+export default function KanbanBoard({ assets, currentUser, canMoveTo, onOpen, onChangeStatus }) {
   const [dragOver, setDragOver] = useState(null);
 
   const handleDragStart = (e, asset) => {
@@ -141,6 +144,7 @@ export default function KanbanBoard({ assets, currentUser, onOpen, onChangeStatu
                   key={asset.id}
                   asset={asset}
                   currentUser={currentUser}
+                  canMoveTo={canMoveTo}
                   onOpen={onOpen}
                   onMove={move}
                   onDragStart={handleDragStart}

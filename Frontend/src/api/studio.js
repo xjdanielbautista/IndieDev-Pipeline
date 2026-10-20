@@ -41,3 +41,11 @@ export const getAssetHistory = (tenantId, projectId, assetId) =>
 export const listBuilds = (tenantId, projectId) => apiFetch(`${base(tenantId, projectId)}/builds`);
 export const createBuild = (tenantId, projectId, data) =>
   apiFetch(`${base(tenantId, projectId)}/builds`, { method: "POST", body: data });
+
+// ---- Integrantes y roles (solo dueño/admin) ----
+export const addMember = (tenantId, identifier, role) =>
+  apiFetch(`/api/tenants/${tenantId}/members`, { method: "POST", body: { identifier, role } });
+export const updateMemberRole = (tenantId, userId, role) =>
+  apiFetch(`/api/tenants/${tenantId}/members/${userId}`, { method: "PATCH", body: { role } });
+export const removeMember = (tenantId, userId) =>
+  apiFetch(`/api/tenants/${tenantId}/members/${userId}`, { method: "DELETE" });
