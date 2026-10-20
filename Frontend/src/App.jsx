@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import ApiStatus from "./components/ApiStatus";
-import { API_BASE_URL } from "./config/api";
+import LoginScreen from "./components/LoginScreen";
+import { apiFetch, AUTH_EXPIRED_EVENT, getToken, getTokenExpiration, isTokenValid } from "./api/client";
+import { getCurrentUser, logout } from "./api/auth";
 import { 
   Lock, Unlock, GitPullRequest, Code, Paintbrush, ArrowRight, 
-  ArrowLeft, LogOut, FileImage, GitCommit, User, 
-  LayoutDashboard, Server, ShieldAlert, CheckCircle2
+  ArrowLeft, LogOut, FileImage, GitCommit, 
+  LayoutDashboard, ShieldAlert, CheckCircle2
 } from 'lucide-react';
 
 const INITIAL_TASKS = [
@@ -70,11 +72,11 @@ const COLUMNS = [
   { id: 'done', title: 'Terminado', color: 'text-[#00FF66]', border: 'border-[#00FF66]' }
 ];
 
-// Configuración de la conexión con el backend (se lee de Frontend/.env)
-const API_BASE = API_BASE_URL;
+// IDs del estudio/proyecto/asset de prueba (se leen de Frontend/.env).
+// El usuario ya NO va aquí: el backend lo toma del token de la sesión.
 const TENANT_ID = import.meta.env.VITE_TENANT_ID;
+const PROJECT_ID = import.meta.env.VITE_PROJECT_ID;
 const ASSET_ID = import.meta.env.VITE_ASSET_ID;
-const USER_ID = import.meta.env.VITE_USER_ID;
 
 const TaskCard = ({ task, onMove, onToggleLock }) => {
   const isCode = task.type === 'code';
@@ -188,8 +190,63 @@ const TaskCard = ({ task, onMove, onToggleLock }) => {
 };
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(() => isTokenValid(getToken()));
+  const [currentUser, setCurrentUser] = useState(null);
+  const [tenant, setTenant] = useState(null);
+  const [authNotice, setAuthNotice] = useState("");
   const [tasks, setTasks] = useState(INITIAL_TASKS); // TODO: reemplazar con fetch al backend cuando esté listo
+
+  const displayName = currentUser?.username || currentUser?.email || "Cargando...";
+  const tenantName = tenant?.name || "Sin estudio";
+  const tenantInitials = tenantName.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+
+  const handleLogout = useCallback((notice = "") => {
+    logout();
+    setCurrentUser(null);
+    setTenant(null);
+    setAuthNotice(notice);
+    setIsLoggedIn(false);
+  }, []);
+
+  // Si el backend responde 401 (token vencido o inválido), regresa al login.
+  useEffect(() => {
+    const onExpired = () => handleLogout("Tu sesión expiró (dura 30 minutos). Vuelve a iniciar sesión.");
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, [handleLogout]);
+
+  // Al iniciar sesión: carga el usuario del token y programa el cierre cuando venza.
+  useEffect(() => {
+    if (!isLoggedIn) return undefined;
+
+    getCurrentUser().then(setCurrentUser).catch(() => {});
+    if (TENANT_ID) {
+      apiFetch(`/api/tenants/${TENANT_ID}`).then(setTenant).catch(() => setTenant(null));
+    }
+    // Sincroniza la tarjeta ART-105 con el estado real del asset en el backend.
+    if (TENANT_ID && PROJECT_ID && ASSET_ID) {
+      apiFetch(`/api/tenants/${TENANT_ID}/projects/${PROJECT_ID}/assets/${ASSET_ID}`)
+        .then(asset => {
+          const locked = asset.locked_by_user_id !== null;
+          setTasks(prev => prev.map(t => t.id !== 'ART-105' ? t : {
+            ...t,
+            artData: { ...t.artData, assetName: asset.original_name },
+            isLocked: locked,
+            status: locked ? 'locked-assets' : (t.status === 'locked-assets' ? 'in-progress' : t.status),
+            lockedBy: locked ? `Usuario #${asset.locked_by_user_id}` : null,
+          }));
+        })
+        .catch(() => {});
+    }
+
+    const exp = getTokenExpiration(getToken());
+    if (!exp) return undefined;
+    const timer = setTimeout(
+      () => handleLogout("Tu sesión expiró (dura 30 minutos). Vuelve a iniciar sesión."),
+      Math.max(exp - Date.now(), 0),
+    );
+    return () => clearTimeout(timer);
+  }, [isLoggedIn, handleLogout]);
 
   const handleMoveTask = (taskId, direction) => {
     setTasks(prevTasks => prevTasks.map(task => {
@@ -211,22 +268,14 @@ export default function App() {
     // Solo ART-105 está conectada a un asset real en el backend por ahora
     if (taskId === 'ART-105') {
       try {
-        const url = `${API_BASE}/api/tenants/${TENANT_ID}/assets/${ASSET_ID}/lock`;
-        const response = isCurrentlyLocked
-          ? await fetch(`${url}?user_id=${USER_ID}`, { method: 'DELETE' })
-          : await fetch(url, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: Number(USER_ID) }),
-            });
-
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          alert(`Error del backend: ${error.detail || response.status}`);
-          return;
+        const path = `/api/tenants/${TENANT_ID}/projects/${PROJECT_ID}/assets/${ASSET_ID}/lock`;
+        if (isCurrentlyLocked) {
+          await apiFetch(path, { method: 'DELETE' });
+        } else {
+          await apiFetch(path, { method: 'PATCH', body: {} });
         }
-      } catch {
-        alert('No se pudo conectar con el backend. ¿Sigue corriendo uvicorn?');
+      } catch (error) {
+        if (error.status !== 401) alert(`Error del backend: ${error.message}`);
         return;
       }
     }
@@ -237,71 +286,22 @@ export default function App() {
           ...t, 
           isLocked: !isCurrentlyLocked,
           status: !isCurrentlyLocked ? 'locked-assets' : 'in-progress',
-          lockedBy: !isCurrentlyLocked ? 'Alex Dev' : null
+          lockedBy: !isCurrentlyLocked ? displayName : null
         };
       }
       return t;
     }));
   };
 
-  const handleLogin = (e) => {
-    e.preventDefault();
-    setIsLoggedIn(true);
-  };
-
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-  };
-
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-[#0B0D14] text-gray-300 font-sans flex items-center justify-center relative overflow-hidden selection:bg-[#00F0FF] selection:text-black">
-        <div className="absolute top-[10%] left-[20%] w-96 h-96 bg-[#00F0FF]/10 rounded-full blur-[120px] pointer-events-none"></div>
-        <div className="absolute bottom-[10%] right-[20%] w-96 h-96 bg-[#FF0055]/10 rounded-full blur-[120px] pointer-events-none"></div>
-        
-        <div className="z-10 w-full max-w-md p-8 bg-[#151822] border border-[#272B3B] rounded-xl shadow-2xl backdrop-blur-md">
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-xl bg-gradient-to-br from-[#151822] to-[#272B3B] border border-[#272B3B] shadow-[0_0_15px_rgba(0,240,255,0.2)] mb-4">
-              <Code className="w-8 h-8 text-[#00F0FF]" />
-            </div>
-            <h1 className="text-3xl font-bold text-white tracking-tight">IndieDev <span className="text-[#00F0FF]">Pipeline</span></h1>
-            <p className="text-xs text-gray-400 mt-2 font-mono uppercase tracking-widest">Workspace Gateway</p>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div>
-              <label className="block text-xs font-mono text-gray-400 mb-1">tenant_id</label>
-              <div className="relative">
-                <Server className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                <input type="text" value="pixel-ninja-studios" readOnly className="w-full bg-[#0B0D14] border border-[#272B3B] text-white font-mono text-sm rounded-lg pl-10 pr-4 py-2.5 focus:outline-none" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-mono text-gray-400 mb-1">user_email</label>
-              <div className="relative">
-                <User className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                <input type="email" defaultValue="alex@pixelninja.dev" required className="w-full bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-lg pl-10 pr-4 py-2.5 focus:outline-none focus:border-[#00F0FF] focus:ring-1 focus:ring-[#00F0FF] transition-colors" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-mono text-gray-400 mb-1">password</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                <input type="password" defaultValue="password" required className="w-full bg-[#0B0D14] border border-[#272B3B] text-white rounded-lg pl-10 pr-4 py-2.5 focus:outline-none focus:border-[#00F0FF] focus:ring-1 focus:ring-[#00F0FF] transition-colors" />
-              </div>
-            </div>
-            
-            <button type="submit" className="w-full mt-6 bg-[#00F0FF] hover:bg-cyan-400 text-black font-bold rounded-lg px-4 py-3 transition-colors shadow-[0_0_15px_rgba(0,240,255,0.4)] flex justify-center items-center gap-2 group focus-visible:ring-2 focus-visible:ring-white">
-              <span>INICIAR SESIÓN</span>
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </button>
-          </form>
-
-          <div className="mt-6 text-center text-xs font-mono text-gray-400">
-            <ApiStatus />
-          </div>
-        </div>
-      </div>
+      <LoginScreen
+        notice={authNotice}
+        onLoggedIn={() => {
+          setAuthNotice("");
+          setIsLoggedIn(true);
+        }}
+      />
     );
   }
 
@@ -311,8 +311,8 @@ export default function App() {
       <header className="h-14 bg-[#151822] border-b border-[#272B3B] flex items-center justify-between px-6 shrink-0 z-20">
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2 border-r border-[#272B3B] pr-6">
-            <div className="w-6 h-6 rounded bg-gradient-to-br from-[#00F0FF] to-blue-600 flex items-center justify-center text-xs font-bold text-black shadow-[0_0_10px_rgba(0,240,255,0.3)]">PN</div>
-            <span className="text-sm font-semibold text-white">Pixel Ninja Studios</span>
+            <div className="w-6 h-6 rounded bg-gradient-to-br from-[#00F0FF] to-blue-600 flex items-center justify-center text-xs font-bold text-black shadow-[0_0_10px_rgba(0,240,255,0.3)]">{tenantInitials}</div>
+            <span className="text-sm font-semibold text-white">{tenantName}</span>
           </div>
           <div className="flex items-center space-x-2 text-white">
             <LayoutDashboard className="w-5 h-5 text-[#00F0FF]" />
@@ -330,12 +330,12 @@ export default function App() {
           </div>
           <div className="flex items-center space-x-3 pl-4 border-l border-[#272B3B]">
             <div className="text-right">
-              <div className="text-sm font-medium text-white">Alex Dev</div>
-              <div className="text-[10px] font-mono text-[#00F0FF] uppercase">Lead Programmer</div>
+              <div className="text-sm font-medium text-white">{displayName}</div>
+              <div className="text-[10px] font-mono text-[#00F0FF]">{currentUser?.email ?? ''}</div>
             </div>
-            <div className="w-8 h-8 rounded-full bg-[#00F0FF] flex items-center justify-center text-black font-bold">A</div>
+            <div className="w-8 h-8 rounded-full bg-[#00F0FF] flex items-center justify-center text-black font-bold uppercase">{displayName.charAt(0)}</div>
           </div>
-          <button onClick={handleLogout} className="ml-2 p-2 text-gray-400 hover:text-[#FF3D00] hover:bg-[#FF3D00]/10 rounded transition-colors group focus-visible:ring-2 focus-visible:ring-[#00F0FF]">
+          <button onClick={() => handleLogout()} title="Cerrar sesión" className="ml-2 p-2 text-gray-400 hover:text-[#FF3D00] hover:bg-[#FF3D00]/10 rounded transition-colors group focus-visible:ring-2 focus-visible:ring-[#00F0FF]">
             <LogOut className="w-5 h-5 group-hover:scale-110 transition-transform" />
           </button>
         </div>
