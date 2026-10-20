@@ -7,6 +7,7 @@ from .models import (
     AssetAssignmentMode,
     AssetStatus,
     BuildStatus,
+    MemberRole,
     TaskArea,
     TaskStage,
     TaskStatus,
@@ -45,6 +46,10 @@ class TenantRead(BaseModel):
     slug: str
     owner_user_id: int
     created_at: datetime
+
+
+class TenantMembershipRead(TenantRead):
+    role: MemberRole
 
 
 class ProjectCreate(BaseModel):

@@ -36,6 +36,7 @@ from .schemas import (
     TaskCreate,
     TaskRead,
     TenantCreate,
+    TenantMembershipRead,
     TenantRead,
     Token,
     UserRead,
@@ -200,6 +201,25 @@ def create_tenant(
         db.rollback()
         raise HTTPException(status_code=409, detail="El identificador del estudio ya existe") from error
     return tenant
+
+
+@app.get("/api/tenants", response_model=list[TenantMembershipRead])
+def list_my_tenants(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = db.execute(
+        select(Tenant, Membership.role)
+        .join(Membership, Membership.tenant_id == Tenant.id)
+        .where(Membership.user_id == current_user.id)
+        .order_by(Tenant.name, Tenant.id)
+    ).all()
+    return [
+        TenantMembershipRead.model_validate(
+            {**TenantRead.model_validate(tenant).model_dump(), "role": role}
+        )
+        for tenant, role in rows
+    ]
 
 
 @app.get("/api/tenants/{tenant_id}", response_model=TenantRead)

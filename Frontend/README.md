@@ -18,11 +18,19 @@ Abre `http://localhost:5173`. El backend debe estar corriendo en `http://localho
 | Variable | Para qué sirve |
 | --- | --- |
 | `VITE_API_BASE_URL` | URL del backend. Local: `http://localhost:8000`. En Vercel: la URL pública de Render. |
-| `VITE_TENANT_ID` | ID del estudio que se muestra en el encabezado. |
-| `VITE_PROJECT_ID` | ID del proyecto del asset de prueba. |
-| `VITE_ASSET_ID` | ID del asset conectado a la tarjeta ART-105 (bloqueo/liberación). |
 
-El usuario ya no se configura con una variable: el backend lo obtiene del token de la sesión.
+El estudio y el proyecto ya no se configuran con variables: se eligen (o se crean) desde la página.
+
+## Qué hace la aplicación
+
+- **Primeros pasos:** si tu cuenta no tiene estudio, te pide crear uno (quedas como dueño) y luego tu primer proyecto.
+- **Selector de estudio y proyecto** en el encabezado, con opción de crear nuevos. Se recuerda la última selección.
+- **Tablero Kanban** conectado al backend (cada tarjeta es un asset): Backlog, En progreso, Revisión y Terminado. Se mueven con las flechas o arrastrando, y el tablero se recarga solo cada 30 segundos.
+- **Nueva tarea:** nombre, tipo (código/arte), columna, integrantes asignados y opción de que solo ellos puedan moverla.
+- **Panel de detalle** (clic en una tarjeta): cambiar columna, tipo y asignados; bloquear/liberar el archivo; historial con quién hizo cada cambio y a qué hora; botón **Restaurar** en los últimos 3 cambios para volver al valor anterior.
+- **Filtros:** búsqueda por nombre o `#id`, por tipo y "Mis tareas".
+- **Asset Vault:** tabla con todas las tareas, su estado, asignados y bloqueo.
+- **Build History:** registro de versiones con estado, notas y URL; la última aparece en el encabezado.
 
 ## Autenticación
 
@@ -54,13 +62,17 @@ Si la petición falla, lanza un error con el mensaje que manda el backend en `de
 
 - `src/api/client.js`: manejo del token y `apiFetch`.
 - `src/api/auth.js`: `register`, `login`, `getCurrentUser`, `logout`.
-- `src/components/LoginScreen.jsx`: pantalla de inicio de sesión y registro.
-- `src/App.jsx`: tablero Kanban. El encabezado muestra el usuario (`/api/auth/me`) y el estudio (`/api/tenants/{id}`). La tarjeta ART-105 está conectada al asset real; el resto de tareas sigue con datos de ejemplo.
+- `src/api/studio.js`: llamadas de estudios, proyectos, integrantes, assets, historial y builds.
+- `src/utils/labels.js`: etiquetas en español, formato de fechas (el backend guarda UTC; se muestran en hora local).
+- `src/components/LoginScreen.jsx`: inicio de sesión y registro.
+- `src/components/Workspace.jsx`: encabezado, primeros pasos, filtros y pestañas.
+- `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `forms.jsx`, `ui.jsx`.
 
-## Probar el bloqueo de ART-105
+## Pendiente (necesita backend)
 
-El asset debe existir y tu usuario debe pertenecer al estudio. Después de crear tu cuenta, en `http://localhost:8000/docs` pulsa **Authorize**, inicia sesión y crea en orden: un estudio (`POST /api/tenants`), un proyecto y un asset. Pon esos IDs en `Frontend/.env` y reinicia `npm run dev`.
+- Invitar integrantes al estudio y cambiar su rol (por ahora solo el dueño aparece como integrante).
+- Permisos según el rol (dueño, admin, developer, artista, tester).
 
 ## Despliegue (Vercel)
 
-Configura `VITE_API_BASE_URL` (y los IDs) en las variables de entorno del proyecto en Vercel y vuelve a desplegar: Vite incluye estas variables al compilar. El dominio de Vercel debe estar en `FRONTEND_ORIGINS` del backend.
+Configura `VITE_API_BASE_URL` en las variables de entorno del proyecto en Vercel y vuelve a desplegar: Vite incluye estas variables al compilar. El dominio de Vercel debe estar en `FRONTEND_ORIGINS` del backend.
