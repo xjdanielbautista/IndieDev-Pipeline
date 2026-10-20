@@ -89,6 +89,8 @@ function TaskCard({ asset, currentUser, canMoveTo, onOpen, onMove, onDragStart }
 
 export default function KanbanBoard({ assets, currentUser, canMoveTo, onOpen, onChangeStatus }) {
   const [dragOver, setDragOver] = useState(null);
+  // En celular se ve una columna a la vez; este estado elige cuál.
+  const [mobileColumn, setMobileColumn] = useState("backlog");
 
   const handleDragStart = (e, asset) => {
     e.dataTransfer.setData("text/plain", String(asset.id));
@@ -110,7 +112,24 @@ export default function KanbanBoard({ assets, currentUser, canMoveTo, onOpen, on
   };
 
   return (
-    <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] gap-4 h-full pb-2">
+    <div className="flex flex-col h-full gap-3">
+    <div className="md:hidden grid grid-cols-4 gap-1 p-1 bg-[#151822] border border-[#272B3B] rounded-lg" role="tablist">
+      {STATUSES.map((s) => (
+        <button
+          key={s.id}
+          role="tab"
+          aria-selected={mobileColumn === s.id}
+          onClick={() => setMobileColumn(s.id)}
+          className={`py-1.5 rounded-md text-[11px] leading-tight ${
+            mobileColumn === s.id ? `bg-[#1C202D] ${s.color} font-semibold` : "text-gray-500"
+          }`}
+        >
+          {s.label}
+          <span className="block font-mono text-[10px] text-gray-500">{assets.filter((a) => a.status === s.id).length}</span>
+        </button>
+      ))}
+    </div>
+    <div className="grid grid-cols-1 md:grid-cols-none md:grid-flow-col md:auto-cols-[minmax(240px,1fr)] gap-4 flex-1 min-h-0 pb-2">
       {STATUSES.map((col) => {
         const columnAssets = assets.filter((a) => a.status === col.id);
         return (
@@ -123,7 +142,7 @@ export default function KanbanBoard({ assets, currentUser, canMoveTo, onOpen, on
             onDragLeave={() => setDragOver((current) => (current === col.id ? null : current))}
             onDrop={(e) => handleDrop(e, col.id)}
             data-column={col.id}
-            className={`flex flex-col min-h-0 bg-[#151822]/60 border rounded-lg transition-colors ${
+            className={`${col.id === mobileColumn ? "flex" : "hidden md:flex"} flex-col min-h-0 bg-[#151822]/60 border rounded-lg transition-colors ${
               dragOver === col.id ? "border-[#00F0FF]/60 bg-[#00F0FF]/5" : "border-[#272B3B]"
             }`}
           >
@@ -159,6 +178,7 @@ export default function KanbanBoard({ assets, currentUser, canMoveTo, onOpen, on
           </div>
         );
       })}
+    </div>
     </div>
   );
 }

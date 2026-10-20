@@ -32,6 +32,8 @@ El estudio y el proyecto ya no se configuran con variables: se eligen (o se crea
 - **Asset Vault:** tabla con todas las tareas, su estado, asignados y bloqueo.
 - **Build History:** registro de versiones con estado, notas y URL; la última aparece en el encabezado.
 - **Equipo:** integrantes con su rol y sus tareas pendientes; agregar, cambiar rol o quitar (dueño/admin).
+- **Resumen:** avance del proyecto por columna y por tipo, carga de trabajo pendiente por persona, conteo de builds y listas de tareas sin asignar, en revisión y bloqueadas. Se calcula con los datos que ya carga el tablero.
+- **Celular:** en pantallas chicas el tablero muestra una columna a la vez con un selector arriba, y el encabezado y los filtros se acomodan sin desbordarse.
 
 ## Funciones que esperan al backend
 
@@ -71,7 +73,7 @@ Si la petición falla, lanza un error con el mensaje que manda el backend en `de
 - `src/utils/labels.js`: etiquetas en español, formato de fechas (el backend guarda UTC; se muestran en hora local).
 - `src/components/LoginScreen.jsx`: inicio de sesión y registro.
 - `src/components/Workspace.jsx`: encabezado, primeros pasos, filtros y pestañas.
-- `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `TeamPanel.jsx`, `forms.jsx`, `ui.jsx`.
+- `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `TeamPanel.jsx`, `ProjectSummary.jsx`, `forms.jsx`, `ui.jsx`.
 - `src/utils/permissions.js`: reglas por rol para la interfaz.
 - `src/components/TaskExtras.jsx`, `NotificationsBell.jsx`: funciones que esperan al backend.
 

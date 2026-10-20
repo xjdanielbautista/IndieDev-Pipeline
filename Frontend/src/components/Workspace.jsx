@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Table2, Users } from "lucide-react";
+import { BarChart3, Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Table2, Users } from "lucide-react";
 import ApiStatus from "./ApiStatus";
 import AssetVault from "./AssetVault";
 import BuildHistory from "./BuildHistory";
 import KanbanBoard from "./KanbanBoard";
 import NotificationsBell from "./NotificationsBell";
+import ProjectSummary from "./ProjectSummary";
 import TaskDetail from "./TaskDetail";
 import TeamPanel from "./TeamPanel";
 import { CreateBuildForm, CreateProjectForm, CreateStudioForm, CreateTaskForm } from "./forms";
@@ -33,7 +34,7 @@ const store = {
 };
 
 const selectClass =
-  "bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-md pl-2 pr-7 py-1.5 focus:outline-none focus:border-[#00F0FF] max-w-[240px]";
+  "bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-md pl-2 pr-7 py-1.5 focus:outline-none focus:border-[#00F0FF] max-w-[150px] sm:max-w-[240px]";
 
 function Onboarding({ step, tenant, onStudio, onProject, onLogout }) {
   if (step === "project" && !isManager(tenant.role)) {
@@ -240,6 +241,7 @@ export default function Workspace({ currentUser, onLogout }) {
 
   const tabs = [
     { id: "board", label: "Tablero Kanban", icon: FolderKanban },
+    { id: "summary", label: "Resumen", icon: BarChart3 },
     { id: "vault", label: "Asset Vault", icon: Table2 },
     { id: "builds", label: "Build History", icon: Package },
     { id: "team", label: `Equipo (${members.length})`, icon: Users },
@@ -250,8 +252,8 @@ export default function Workspace({ currentUser, onLogout }) {
   return (
     <div className="h-screen bg-[#0B0D14] text-gray-300 font-sans flex flex-col selection:bg-[#00F0FF] selection:text-black">
       <header className="min-h-14 bg-[#151822] border-b border-[#272B3B] flex flex-wrap items-center justify-between gap-3 px-4 md:px-6 py-2 shrink-0">
-        <div className="flex flex-wrap items-center gap-3 md:gap-5">
-          <div className="flex items-center gap-2">
+        <div className="contents md:flex md:flex-wrap md:items-center md:gap-5">
+          <div className="flex items-center gap-2 order-1">
             <div className="w-7 h-7 rounded bg-gradient-to-br from-[#00F0FF] to-blue-600 flex items-center justify-center text-xs font-bold text-black">
               {initials(tenant.name)}
             </div>
@@ -268,11 +270,11 @@ export default function Workspace({ currentUser, onLogout }) {
               ))}
               <option value="new">+ Nuevo estudio</option>
             </select>
-            <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border border-[#00F0FF]/30 text-[#00F0FF] bg-[#00F0FF]/10">
+            <span className="hidden sm:inline text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border border-[#00F0FF]/30 text-[#00F0FF] bg-[#00F0FF]/10">
               {ROLES[tenant.role] ?? tenant.role}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 order-3 md:order-2 w-full md:w-auto">
             <LayoutDashboard className="w-5 h-5 text-[#00F0FF]" />
             <select
               aria-label="Proyecto"
@@ -290,7 +292,7 @@ export default function Workspace({ currentUser, onLogout }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 md:gap-4">
+        <div className="flex items-center gap-2 md:gap-4 order-2 md:order-3 ml-auto">
           <div className="hidden lg:block text-xs font-mono text-gray-400">
             <ApiStatus />
           </div>
@@ -331,12 +333,12 @@ export default function Workspace({ currentUser, onLogout }) {
       </header>
 
       <div className="bg-[#0B0D14] border-b border-[#272B3B] flex flex-wrap items-center justify-between gap-3 px-4 md:px-6 py-2 shrink-0">
-        <nav className="flex gap-1">
+        <nav className="flex gap-1 overflow-x-auto max-w-full -mx-1 px-1">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors ${
+              className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors whitespace-nowrap shrink-0 ${
                 tab === id ? "bg-[#1C202D] text-white border border-[#272B3B]" : "text-gray-400 hover:text-white hover:bg-[#151822] border border-transparent"
               }`}
             >
@@ -347,13 +349,13 @@ export default function Workspace({ currentUser, onLogout }) {
 
         {(tab === "board" || tab === "vault") && (
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <Search className="absolute left-2.5 top-2 w-4 h-4 text-gray-500" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar tarea o #id"
-                className="bg-[#151822] border border-[#272B3B] text-sm text-white rounded-md pl-8 pr-3 py-1.5 w-44 focus:outline-none focus:border-[#00F0FF]"
+                className="bg-[#151822] border border-[#272B3B] text-sm text-white rounded-md pl-8 pr-3 py-1.5 w-full sm:w-44 focus:outline-none focus:border-[#00F0FF]"
               />
             </div>
             <div className="flex bg-[#151822] border border-[#272B3B] rounded-md p-0.5">
@@ -435,6 +437,14 @@ export default function Workspace({ currentUser, onLogout }) {
           </>
         ) : tab === "vault" ? (
           <AssetVault assets={filteredAssets} members={members} onOpen={(a) => setOpenAssetId(a.id)} />
+        ) : tab === "summary" ? (
+          <ProjectSummary
+            project={project}
+            assets={assets}
+            members={members}
+            builds={builds}
+            onOpen={(a) => setOpenAssetId(a.id)}
+          />
         ) : tab === "builds" ? (
           <BuildHistory builds={builds} onNew={canBuild(tenant.role) ? () => setModal("build") : null} />
         ) : (
