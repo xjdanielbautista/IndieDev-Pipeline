@@ -40,7 +40,12 @@ def upgrade() -> None:
         if bind.dialect.name == "sqlite":
             with op.batch_alter_table("assets", recreate="always") as batch_op:
                 batch_op.add_column(
-                    sa.Column("created_by_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True)
+                    sa.Column(
+                        "created_by_user_id",
+                        sa.Integer(),
+                        sa.ForeignKey("users.id", name="fk_assets_created_by_user_id_users"),
+                        nullable=True,
+                    )
                 )
         else:
             op.add_column("assets", sa.Column("created_by_user_id", sa.Integer(), nullable=True))
@@ -51,7 +56,12 @@ def upgrade() -> None:
         if bind.dialect.name == "sqlite":
             with op.batch_alter_table("assets", recreate="always") as batch_op:
                 batch_op.add_column(
-                    sa.Column("assigned_to_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True)
+                    sa.Column(
+                        "assigned_to_user_id",
+                        sa.Integer(),
+                        sa.ForeignKey("users.id", name="fk_assets_assigned_to_user_id_users"),
+                        nullable=True,
+                    )
                 )
         else:
             op.add_column("assets", sa.Column("assigned_to_user_id", sa.Integer(), nullable=True))

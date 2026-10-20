@@ -102,7 +102,10 @@ export async function apiFetch(path, { method = "GET", body, auth = true, header
       body: finalBody,
     });
   } catch {
-    throw new ApiError("No se pudo conectar con el backend", 0);
+    throw new ApiError(
+      "No se pudo conectar con el backend. Revisa que uvicorn esté corriendo y si su terminal muestra un error (Traceback).",
+      0,
+    );
   }
 
   const data = await response.json().catch(() => null);
