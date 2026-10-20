@@ -1,4 +1,5 @@
-import { apiFetch } from "./client";
+import { API_BASE_URL } from "../config/api";
+import { ApiError, apiFetch, getToken } from "./client";
 
 // Llamadas al backend para estudios, proyectos, tareas (assets) y builds.
 // Todas usan el token de la sesión mediante apiFetch.
@@ -49,3 +50,62 @@ export const updateMemberRole = (tenantId, userId, role) =>
   apiFetch(`/api/tenants/${tenantId}/members/${userId}`, { method: "PATCH", body: { role } });
 export const removeMember = (tenantId, userId) =>
   apiFetch(`/api/tenants/${tenantId}/members/${userId}`, { method: "DELETE" });
+
+// ---- Funciones pendientes del backend (ver docs/PENDIENTES_BACKEND.md) ----
+// Mientras no existan, responden 404 "Not Found" y la interfaz muestra "Próximamente".
+
+const assetPath = (tenantId, projectId, assetId) => `${base(tenantId, projectId)}/assets/${assetId}`;
+
+// Comentarios
+export const listComments = (tenantId, projectId, assetId) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/comments`);
+export const addComment = (tenantId, projectId, assetId, body) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/comments`, { method: "POST", body: { body } });
+export const deleteComment = (tenantId, projectId, assetId, commentId) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/comments/${commentId}`, { method: "DELETE" });
+
+// Commits de GitHub
+export const listCommits = (tenantId, projectId, assetId) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/commits`);
+export const connectGithub = (tenantId, projectId, githubRepo) =>
+  apiFetch(`${base(tenantId, projectId)}/github`, { method: "POST", body: { github_repo: githubRepo } });
+
+// Archivos
+export function uploadAssetFile(tenantId, projectId, assetId, file) {
+  const form = new FormData();
+  form.append("file", file);
+  return apiFetch(`${assetPath(tenantId, projectId, assetId)}/file`, { method: "POST", body: form });
+}
+
+// Descarga: con Firebase/S3 el backend responde { url }; con el proveedor local, el archivo directo.
+export async function downloadAssetFile(tenantId, projectId, assetId, fileName) {
+  const token = getToken();
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${assetPath(tenantId, projectId, assetId)}/file`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new ApiError("No se pudo conectar con el backend", 0);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(data?.detail || `Error ${response.status}`, response.status);
+  }
+  if ((response.headers.get("content-type") || "").includes("application/json")) {
+    const { url } = await response.json();
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+// Notificaciones
+export const listNotifications = () => apiFetch("/api/notifications?limit=30");
+export const markNotificationsRead = (ids) =>
+  apiFetch("/api/notifications/read", { method: "POST", body: ids === "all" ? { all: true } : { ids } });

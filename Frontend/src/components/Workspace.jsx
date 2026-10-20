@@ -4,6 +4,7 @@ import ApiStatus from "./ApiStatus";
 import AssetVault from "./AssetVault";
 import BuildHistory from "./BuildHistory";
 import KanbanBoard from "./KanbanBoard";
+import NotificationsBell from "./NotificationsBell";
 import TaskDetail from "./TaskDetail";
 import TeamPanel from "./TeamPanel";
 import { CreateBuildForm, CreateProjectForm, CreateStudioForm, CreateTaskForm } from "./forms";
@@ -303,6 +304,15 @@ export default function Workspace({ currentUser, onLogout }) {
               Build: {latestBuild.version}
             </div>
           )}
+          <NotificationsBell
+            onOpen={(n) => {
+              if (!tenants.some((t) => t.id === n.tenant_id)) return;
+              setTenantId(n.tenant_id);
+              if (n.project_id) setProjectId(n.project_id);
+              setTab("board");
+              setOpenAssetId(n.asset_id);
+            }}
+          />
           <div className="flex items-center gap-2 pl-3 border-l border-[#272B3B]">
             <div className="text-right hidden sm:block">
               <div className="text-sm font-medium text-white">{currentUser?.username ?? currentUser?.email}</div>

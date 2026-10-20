@@ -65,7 +65,11 @@ export function describeChange(entry) {
     case "locked":
       return "bloqueó el archivo";
     case "unlocked":
-      return "liberó el archivo";
+      return entry.previous_value && entry.previous_value !== entry.actor_username
+        ? `liberó el bloqueo de ${entry.previous_value}`
+        : "liberó el archivo";
+    case "file_uploaded":
+      return `subió una nueva versión${entry.new_value ? `: ${entry.new_value}` : ""}`;
     default:
       return entry.action;
   }
@@ -123,4 +127,16 @@ export function initials(name = "") {
       .slice(0, 2)
       .toUpperCase() || "?"
   );
+}
+
+export function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }

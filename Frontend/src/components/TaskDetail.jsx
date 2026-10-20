@@ -4,6 +4,7 @@ import { getAssetHistory, lockAsset, unlockAsset, updateAsset } from "../api/stu
 import { CATEGORIES, STATUSES, describeChange, formatDateTime, timeAgo } from "../utils/labels";
 import { canLock, canMove, isManager } from "../utils/permissions";
 import { Avatar, inputClass, Label, useToast } from "./ui";
+import { CommentsSection, CommitsSection, FileSection } from "./TaskExtras";
 
 const UNDO_LIMIT = 3;
 const REVERTIBLE = ["status_changed", "category_changed", "assignment_mode_changed", "assignments_changed"];
@@ -240,6 +241,24 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
               {isLocked ? "Liberar" : "Bloquear"}
             </button>
           </section>
+
+          <FileSection
+            tenant={tenant}
+            projectId={projectId}
+            asset={asset}
+            role={role}
+            currentUser={currentUser}
+            onChanged={(updated) => {
+              onChanged(updated);
+              loadHistory();
+            }}
+          />
+
+          {asset.category === "code" && (
+            <CommitsSection tenant={tenant} projectId={projectId} asset={asset} role={role} />
+          )}
+
+          <CommentsSection tenant={tenant} projectId={projectId} asset={asset} role={role} currentUser={currentUser} />
 
           <section>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2 mb-1">

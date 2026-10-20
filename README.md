@@ -45,6 +45,8 @@ El proyecto está diseñado bajo un modelo **SaaS Multi-Tenant** que garantiza e
 IndieDev-Pipeline/
 ├── Frontend/             # Interfaz de usuario (React + Vite + Tailwind)
 ├── Backend/              # API REST y modelos de datos (FastAPI)
+├── docs/
+│   └── PENDIENTES_BACKEND.md  # Funciones pendientes con su especificación
 └── README.md             # Documentación principal del proyecto
 ```
 

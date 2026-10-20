@@ -33,6 +33,10 @@ El estudio y el proyecto ya no se configuran con variables: se eligen (o se crea
 - **Build History:** registro de versiones con estado, notas y URL; la última aparece en el encabezado.
 - **Equipo:** integrantes con su rol y sus tareas pendientes; agregar, cambiar rol o quitar (dueño/admin).
 
+## Funciones que esperan al backend
+
+Las secciones **Archivo**, **Commits** y **Comentarios** del panel de cada tarea, y la **campana de notificaciones**, ya están hechas. Mientras el backend no tenga sus endpoints muestran "Próximamente"; se activan solas cuando existan. Los contratos están en [`docs/PENDIENTES_BACKEND.md`](../docs/PENDIENTES_BACKEND.md). El código está en `src/components/TaskExtras.jsx`, `src/components/NotificationsBell.jsx` y al final de `src/api/studio.js`.
+
 ## Autenticación
 
 - **Crear cuenta** → `POST /api/auth/register` con JSON `{ username, email, password }` (contraseña de 8 a 128 caracteres). Al registrarse, el frontend inicia sesión automáticamente.
@@ -69,6 +73,7 @@ Si la petición falla, lanza un error con el mensaje que manda el backend en `de
 - `src/components/Workspace.jsx`: encabezado, primeros pasos, filtros y pestañas.
 - `src/components/KanbanBoard.jsx`, `TaskDetail.jsx`, `AssetVault.jsx`, `BuildHistory.jsx`, `TeamPanel.jsx`, `forms.jsx`, `ui.jsx`.
 - `src/utils/permissions.js`: reglas por rol para la interfaz.
+- `src/components/TaskExtras.jsx`, `NotificationsBell.jsx`: funciones que esperan al backend.
 
 ## Roles y permisos
 

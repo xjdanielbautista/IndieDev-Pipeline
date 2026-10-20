@@ -120,3 +120,10 @@ export async function apiFetch(path, { method = "GET", body, auth = true, header
 
   return data;
 }
+
+// true si el error significa que la ruta todavía no existe en el backend
+// (FastAPI responde 404 "Not Found" o 405 para rutas no implementadas).
+// Ver docs/PENDIENTES_BACKEND.md.
+export function isNotImplemented(error) {
+  return error?.status === 405 || (error?.status === 404 && error?.message === "Not Found");
+}
