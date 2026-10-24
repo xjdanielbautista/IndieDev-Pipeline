@@ -1,8 +1,12 @@
+import hashlib
+import hmac
 import os
+import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
@@ -14,10 +18,14 @@ from .models import (
     Asset,
     AssetAssignment,
     AssetAssignmentMode,
+    AssetCommit,
+    AssetComment,
     AssetHistory,
+    AssetStatus,
     Build,
     MemberRole,
     Membership,
+    Notification,
     Project,
     StorageProvider,
     Task,
@@ -25,6 +33,9 @@ from .models import (
     User,
 )
 from .schemas import (
+    AssetCommitRead,
+    AssetCommentCreate,
+    AssetCommentRead,
     AssetCreate,
     AssetHistoryRead,
     AssetLock,
@@ -34,7 +45,11 @@ from .schemas import (
     BuildRead,
     MemberAdd,
     MemberRead,
+    GithubConnect,
+    GithubConnectRead,
     MemberRoleUpdate,
+    NotificationRead,
+    NotificationReadUpdate,
     ProjectCreate,
     ProjectRead,
     TaskCreate,
@@ -139,6 +154,28 @@ def record_asset_change(
             new_value=new_value,
         )
     )
+
+
+def add_notification(
+    db: Session,
+    recipient_id: int,
+    actor_id: int,
+    tenant_id: int,
+    project_id: int | None,
+    asset_id: int | None,
+    kind: str,
+    message: str,
+) -> None:
+    if recipient_id == actor_id:
+        return
+    db.add(Notification(
+        user_id=recipient_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        asset_id=asset_id,
+        kind=kind,
+        message=message,
+    ))
 
 
 @app.get("/health")
@@ -523,6 +560,17 @@ def create_asset(
         users = db.scalars(select(User).where(User.id.in_(assigned_user_ids))).all()
         names = [user.username or user.email for user in users]
         record_asset_change(db, asset, current_user, "assigned", new_value=", ".join(names))
+        for user in users:
+            add_notification(
+                db,
+                user.id,
+                current_user.id,
+                tenant_id,
+                project_id,
+                asset.id,
+                "assigned",
+                f"{current_user.username or current_user.email} te asignó \"{asset.original_name}\"",
+            )
     db.commit()
     db.refresh(asset)
     return asset
@@ -651,8 +699,37 @@ def update_asset(
             )
             asset.assignments.clear()
             asset.assignments.extend(AssetAssignment(user_id=user_id) for user_id in new_ids)
+            for user_id in new_id_set - old_ids:
+                add_notification(
+                    db,
+                    user_id,
+                    current_user.id,
+                    tenant_id,
+                    project_id,
+                    asset.id,
+                    "assigned",
+                    f"{current_user.username or current_user.email} te asignó \"{asset.original_name}\"",
+                )
     if asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value and not asset.assigned_user_ids:
         raise HTTPException(status_code=422, detail="El modo restringido requiere al menos un integrante asignado")
+
+    if "status" in changes and changes["status"] is not None:
+        new_status = changes["status"] if isinstance(changes["status"], str) else changes["status"].value
+        if new_status == AssetStatus.REVIEW.value:
+            tester_memberships = db.scalars(
+                select(Membership).where(Membership.tenant_id == tenant_id, Membership.role == MemberRole.TESTER)
+            ).all()
+            for tester_membership in tester_memberships:
+                add_notification(
+                    db,
+                    tester_membership.user_id,
+                    current_user.id,
+                    tenant_id,
+                    project_id,
+                    asset.id,
+                    "review",
+                    f"\"{asset.original_name}\" está listo para revisión",
+                )
 
     db.commit()
     db.refresh(asset)
@@ -756,12 +833,23 @@ def unlock_asset(
             detail="Solo quien bloqueó el asset (o el dueño/admin) puede liberarlo",
         )
     locker = db.get(User, asset.locked_by_user_id)
+    locker_id = asset.locked_by_user_id
     record_asset_change(
         db,
         asset,
         current_user,
         "unlocked",
         previous_value=(locker.username or locker.email) if locker else None,
+    )
+    add_notification(
+        db,
+        locker_id,
+        current_user.id,
+        tenant_id,
+        project_id,
+        asset.id,
+        "unlocked",
+        f"{current_user.username or current_user.email} liberó tu bloqueo de \"{asset.original_name}\"",
     )
     asset.locked_by_user_id = None
     asset.locked_at = None
@@ -886,3 +974,159 @@ def download_asset_file(
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error
+
+
+@app.post(
+    "/api/tenants/{tenant_id}/projects/{project_id}/github",
+    response_model=GithubConnectRead,
+)
+def connect_github(
+    tenant_id: int,
+    project_id: int,
+    payload: GithubConnect,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "configurar GitHub")
+    project = db.scalar(select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id))
+    if project is None:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    webhook_secret = secrets.token_hex(32)
+    project.github_repo = payload.github_repo.strip()
+    project.github_webhook_secret = webhook_secret
+    db.commit()
+    public_base = os.getenv("PUBLIC_BACKEND_URL", str(request.base_url).rstrip("/"))
+    return GithubConnectRead(
+        github_repo=project.github_repo,
+        webhook_url=f"{public_base}/api/webhooks/github/{project_id}",
+        secret=webhook_secret,
+    )
+
+
+@app.post("/api/webhooks/github/{project_id}", status_code=204)
+async def github_webhook(project_id: int, request: Request, db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if project is None or not project.github_webhook_secret:
+        raise HTTPException(status_code=401, detail="Webhook no configurado o firma inválida")
+
+    body = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    expected = "sha256=" + hmac.new(project.github_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Webhook no configurado o firma inválida")
+
+    event = request.headers.get("X-GitHub-Event", "")
+    if event == "ping":
+        return Response(status_code=200)
+    if event != "push":
+        return Response(status_code=204)
+
+    payload = await request.json()
+    for commit in payload.get("commits", []):
+        message = commit.get("message", "")
+        for asset_id_text in re.findall(r"#(\d+)", message):
+            asset = db.scalar(select(Asset).where(
+                Asset.id == int(asset_id_text),
+                Asset.tenant_id == project.tenant_id,
+                Asset.project_id == project.id,
+            ))
+            if asset is None:
+                continue
+            sha = commit.get("id", "")[:40]
+            if not sha or db.scalar(select(AssetCommit).where(AssetCommit.asset_id == asset.id, AssetCommit.sha == sha)):
+                continue
+            timestamp_text = commit.get("timestamp")
+            try:
+                committed_at = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
+            except (AttributeError, ValueError):
+                committed_at = datetime.now(timezone.utc)
+            db.add(AssetCommit(
+                tenant_id=project.tenant_id,
+                asset_id=asset.id,
+                sha=sha,
+                message=message,
+                author_name=(commit.get("author") or {}).get("name", "Desconocido")[:120],
+                url=commit.get("url", "")[:500],
+                committed_at=committed_at,
+            ))
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/commits", response_model=list[AssetCommitRead])
+def list_asset_commits(tenant_id: int, project_id: int, asset_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.tenant_id == tenant_id, Asset.project_id == project_id))
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    return db.scalars(select(AssetCommit).where(AssetCommit.asset_id == asset_id).order_by(AssetCommit.committed_at.desc(), AssetCommit.id.desc())).all()
+
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/comments", response_model=list[AssetCommentRead])
+def list_asset_comments(tenant_id: int, project_id: int, asset_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.tenant_id == tenant_id, Asset.project_id == project_id))
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    return db.scalars(select(AssetComment).where(AssetComment.asset_id == asset_id).order_by(AssetComment.created_at.asc(), AssetComment.id.asc())).all()
+
+
+@app.post("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/comments", response_model=AssetCommentRead, status_code=201)
+def create_asset_comment(tenant_id: int, project_id: int, asset_id: int, payload: AssetCommentCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(select(Asset).where(Asset.id == asset_id, Asset.tenant_id == tenant_id, Asset.project_id == project_id))
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="El comentario no puede estar vacío")
+
+    comment = AssetComment(tenant_id=tenant_id, asset_id=asset.id, user_id=current_user.id, body=body)
+    db.add(comment)
+    recipient_ids = set(asset.assigned_user_ids)
+    if asset.created_by_user_id is not None:
+        recipient_ids.add(asset.created_by_user_id)
+    recipient_ids.discard(current_user.id)
+    for recipient_id in recipient_ids:
+        db.add(Notification(user_id=recipient_id, tenant_id=tenant_id, project_id=project_id, asset_id=asset.id, kind="comment", message=f"{current_user.username or current_user.email} comentó en \"{asset.original_name}\""))
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+
+@app.delete("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/comments/{comment_id}", status_code=204)
+def delete_asset_comment(tenant_id: int, project_id: int, asset_id: int, comment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    comment = db.scalar(select(AssetComment).where(AssetComment.id == comment_id, AssetComment.tenant_id == tenant_id, AssetComment.asset_id == asset_id))
+    if comment is None:
+        raise HTTPException(status_code=404, detail="Comentario no encontrado")
+    if comment.user_id != current_user.id and not is_manager(membership):
+        raise HTTPException(status_code=403, detail="Solo el autor o un dueño/admin puede eliminar el comentario")
+    db.delete(comment)
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.get("/api/notifications", response_model=list[NotificationRead])
+def list_notifications(limit: int = 30, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    limit = min(max(limit, 1), 100)
+    notifications = db.scalars(select(Notification).where(Notification.user_id == current_user.id).order_by(Notification.created_at.desc(), Notification.id.desc()).limit(limit)).all()
+    return [{"id": item.id, "kind": item.kind, "message": item.message, "tenant_id": item.tenant_id, "project_id": item.project_id, "asset_id": item.asset_id, "read": item.read_at is not None, "created_at": item.created_at} for item in notifications]
+
+
+@app.post("/api/notifications/read", status_code=204)
+def mark_notifications_read(payload: NotificationReadUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = select(Notification).where(Notification.user_id == current_user.id)
+    if payload.all:
+        notifications = db.scalars(query).all()
+    else:
+        if payload.ids is None:
+            raise HTTPException(status_code=422, detail="Debe enviar ids o all=true")
+        notifications = db.scalars(query.where(Notification.id.in_(payload.ids))).all()
+    for notification in notifications:
+        notification.read_at = datetime.now(timezone.utc)
+    db.commit()
+    return Response(status_code=204)

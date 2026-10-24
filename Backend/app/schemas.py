@@ -62,7 +62,18 @@ class ProjectRead(ProjectCreate):
 
     id: int
     tenant_id: int
+    github_repo: str | None = None
     created_at: datetime
+
+
+class GithubConnect(BaseModel):
+    github_repo: str = Field(min_length=3, max_length=200, pattern=r"^[^/\s]+/[^/\s]+$")
+
+
+class GithubConnectRead(BaseModel):
+    github_repo: str
+    webhook_url: str
+    secret: str
 
 
 class TaskCreate(BaseModel):
@@ -172,3 +183,45 @@ class AssetLock(BaseModel):
     """Empty request body; the authenticated user is the one locking the asset."""
 
     pass
+
+
+class AssetCommitRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sha: str
+    message: str
+    author_name: str
+    url: str
+    committed_at: datetime
+
+
+class AssetCommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class AssetCommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_id: int
+    user: UserSummary | None
+    body: str
+    created_at: datetime
+
+
+class NotificationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    message: str
+    tenant_id: int
+    project_id: int | None
+    asset_id: int | None
+    read: bool
+    created_at: datetime
+
+
+class NotificationReadUpdate(BaseModel):
+    ids: list[int] | None = None
+    all: bool = False

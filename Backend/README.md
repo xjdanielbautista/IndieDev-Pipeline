@@ -176,6 +176,7 @@ export SECRET_KEY="$(openssl rand -hex 32)"
 export DATABASE_URL='mysql+pymysql://usuario:password@localhost:3306/indiedev'
 alembic upgrade head
 uvicorn app.main:app --reload
+```
 
 ### Guardar las variables en un archivo local
 
@@ -192,7 +193,6 @@ source ./load-env.sh
 ```
 
 `.env.local` y cualquier archivo `.env` deben ignorarse en Git; `.env.example` sí puede publicarse siempre que no contenga secretos reales. El script `load-env.sh` conserva variables de la terminal que ya tengan un valor y solo las reemplaza con las que estén definidas en `.env.local`.
-```
 
 Si trabajas con SQLite local y MySQL ya no tiene prioridad, puedes omitir `DATABASE_URL`. Usa `ASSET_STORAGE_PROVIDER=local` mientras desarrollas si no quieres configurar Firebase o S3.
 
@@ -227,6 +227,13 @@ En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Ren
 - `PATCH /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/lock` y `DELETE .../lock`: bloquea y libera assets; el bloqueo queda registrado en el historial.
 - `POST .../assets/{asset_id}/file`: recibe `multipart/form-data` con el campo `file`; requiere bloqueo propio y permiso del rol.
 - `GET .../assets/{asset_id}/file`: descarga desde el proveedor local o devuelve una URL firmada para S3/Firebase.
+- `POST .../assets/{asset_id}/comments`, `GET .../comments`: crea y lista comentarios antiguos primero.
+- `DELETE .../assets/{asset_id}/comments/{comment_id}`: elimina un comentario propio o si eres dueño/admin.
+- `POST /api/tenants/{tenant_id}/projects/{project_id}/github`: configura GitHub y genera el secreto del webhook una sola vez.
+- `POST /api/webhooks/github/{project_id}`: recibe eventos públicos de GitHub y valida la firma HMAC-SHA256.
+- `GET .../assets/{asset_id}/commits`: lista los commits asociados a una tarea por referencia `#id`.
+- `GET /api/notifications`: lista las notificaciones del usuario autenticado.
+- `POST /api/notifications/read`: marca como leídas ciertas notificaciones o todas.
 
 Los valores permitidos para `category` son `code` (Código) y `art` (Arte). Los valores de `status` son `backlog` (Backlog), `in_progress` (En proceso), `review` (Revisión) y `done` (Terminado). `assignment_mode` acepta `open` o `restricted`: en modo abierto cualquier integrante del estudio puede cambiar el estado; en modo restringido solo pueden hacerlo los usuarios incluidos en `assigned_user_ids`. Esa lista puede contener varios IDs y cada usuario debe pertenecer al mismo estudio. La base los relaciona mediante `asset_assignments`, de modo que cada usuario puede estar asignado a varios assets y cada asset a varios usuarios. El bloqueo es independiente del flujo Kanban. La respuesta incluye `assigned_users` con ID y nombre de usuario; el historial conserva quién realizó cada cambio y cuándo.
 
@@ -262,4 +269,4 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 
 ## Pendiente
 
-Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
+Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación, assets, comentarios, commits y notificaciones. Todavía falta completar la recepción avanzada de algunos webhooks externos y ampliar las pruebas de integración remota. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
