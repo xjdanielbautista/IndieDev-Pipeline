@@ -2,8 +2,9 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Form, HTTPException, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -59,6 +60,15 @@ from .security import (
     hash_password,
     validate_secret_key,
     verify_password,
+)
+from .storage import (
+    firebase_download_url,
+    format_file_size,
+    local_file,
+    s3_download_url,
+    save_firebase,
+    save_local,
+    save_s3,
 )
 
 
@@ -758,3 +768,121 @@ def unlock_asset(
     db.commit()
     db.refresh(asset)
     return asset
+
+
+@app.post(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file",
+    response_model=AssetRead,
+)
+async def upload_asset_file(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+
+    require_can_lock(membership, asset.category)
+    if asset.locked_by_user_id != current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Bloquea el archivo antes de subir una nueva versión",
+        )
+
+    try:
+        max_upload_mb = int(os.getenv("MAX_UPLOAD_MB", "200"))
+    except ValueError as error:
+        raise HTTPException(status_code=500, detail="MAX_UPLOAD_MB no es válido") from error
+    max_upload_bytes = max_upload_mb * 1024 * 1024
+
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size > max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {max_upload_mb} MB")
+
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        if asset.storage_provider == StorageProvider.LOCAL.value:
+            save_local(asset.storage_key, file.file)
+        elif asset.storage_provider == StorageProvider.S3.value:
+            save_s3(asset.storage_key, file.file, content_type)
+        elif asset.storage_provider == StorageProvider.FIREBASE.value:
+            save_firebase(asset.storage_key, file.file, content_type)
+        else:
+            raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="No se pudo guardar el archivo") from error
+
+    uploaded_at = datetime.now(timezone.utc)
+    asset.file_size = file_size
+    asset.content_type = content_type[:120]
+    asset.file_uploaded_at = uploaded_at
+    record_asset_change(
+        db,
+        asset,
+        current_user,
+        "file_uploaded",
+        new_value=f"{file.filename or asset.original_name} ({format_file_size(file_size)})",
+    )
+    db.commit()
+    db.refresh(asset)
+    return asset
+
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file")
+def download_asset_file(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    if asset.file_uploaded_at is None or asset.file_size is None:
+        raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+
+    try:
+        if asset.storage_provider == StorageProvider.LOCAL.value:
+            path = local_file(asset.storage_key)
+            if path is None:
+                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+            return FileResponse(
+                path,
+                filename=asset.original_name,
+                media_type=asset.content_type or "application/octet-stream",
+            )
+        if asset.storage_provider == StorageProvider.S3.value:
+            return s3_download_url(asset.storage_key)
+        if asset.storage_provider == StorageProvider.FIREBASE.value:
+            result = firebase_download_url(asset.storage_key)
+            if result is None:
+                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+            return result
+        raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error

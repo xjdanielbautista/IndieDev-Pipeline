@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, DateTime, Enum as SqlEnum, ForeignKey, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -152,6 +152,9 @@ class Asset(Base):
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     locked_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    file_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_user_id])
     assignments: Mapped[list["AssetAssignment"]] = relationship(

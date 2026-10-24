@@ -148,6 +148,9 @@ class AssetRead(AssetCreate):
     assigned_users: list[UserSummary]
     locked_by_user_id: int | None
     locked_at: datetime | None
+    file_size: int | None
+    content_type: str | None
+    file_uploaded_at: datetime | None
     created_at: datetime
 
 

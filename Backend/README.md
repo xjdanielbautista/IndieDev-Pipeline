@@ -102,6 +102,10 @@ Como el backend está en la carpeta `Backend`, configura esa carpeta como **Root
 - `SECRET_KEY`: valor aleatorio generado con `openssl rand -hex 32`; guárdalo como secreto y no lo compartas.
 - `ACCESS_TOKEN_EXPIRE_MINUTES`: duración opcional del token en minutos (30 por defecto).
 - `ASSET_STORAGE_PROVIDER`: proveedor que configura el backend (`firebase`, `s3` o `local`); no lo elige ni lo envía el usuario de la página.
+- `MAX_UPLOAD_MB`: tamaño máximo de cada archivo, 200 MB por defecto si no se define.
+- `LOCAL_UPLOAD_DIR`: carpeta local para `ASSET_STORAGE_PROVIDER=local`.
+- Firebase: `FIREBASE_CREDENTIALS` con la ruta al JSON de la cuenta de servicio y `FIREBASE_BUCKET` con el nombre del bucket.
+- S3: `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY`.
 
 Si necesitas permitir más de un origen (por ejemplo, el dominio de producción y el de preview), sepáralos con comas en `FRONTEND_ORIGINS`. En Render, usa como comando de inicio:
 
@@ -132,6 +136,8 @@ En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Ren
 - `PATCH /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}`: actualiza `category`, `status`, `assignment_mode` o la lista `assigned_user_ids`.
 - `GET /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/history`: devuelve los eventos con acción, usuario y fecha.
 - `PATCH /api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/lock` y `DELETE .../lock`: bloquea y libera assets; el bloqueo queda registrado en el historial.
+- `POST .../assets/{asset_id}/file`: recibe `multipart/form-data` con el campo `file`; requiere bloqueo propio y permiso del rol.
+- `GET .../assets/{asset_id}/file`: descarga desde el proveedor local o devuelve una URL firmada para S3/Firebase.
 
 Los valores permitidos para `category` son `code` (Código) y `art` (Arte). Los valores de `status` son `backlog` (Backlog), `in_progress` (En proceso), `review` (Revisión) y `done` (Terminado). `assignment_mode` acepta `open` o `restricted`: en modo abierto cualquier integrante del estudio puede cambiar el estado; en modo restringido solo pueden hacerlo los usuarios incluidos en `assigned_user_ids`. Esa lista puede contener varios IDs y cada usuario debe pertenecer al mismo estudio. La base los relaciona mediante `asset_assignments`, de modo que cada usuario puede estar asignado a varios assets y cada asset a varios usuarios. El bloqueo es independiente del flujo Kanban. La respuesta incluye `assigned_users` con ID y nombre de usuario; el historial conserva quién realizó cada cambio y cuándo.
 
