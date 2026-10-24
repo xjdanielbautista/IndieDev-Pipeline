@@ -38,15 +38,34 @@ def local_file(storage_key: str) -> Path:
     return destination
 
 
+def _s3_client():
+    import boto3
+    from botocore.config import Config
+
+    endpoint_url = os.getenv("S3_ENDPOINT_URL")
+    region_name = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    client_options = {
+        "region_name": region_name,
+        "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID") or None,
+        "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY") or None,
+    }
+    if endpoint_url:
+        client_options["endpoint_url"] = endpoint_url
+        client_options["config"] = Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        )
+    return boto3.client("s3", **client_options)
+
+
 def save_s3(storage_key: str, file: BinaryIO, content_type: str | None) -> None:
     bucket = os.getenv("S3_BUCKET")
     if not bucket:
         raise RuntimeError("Falta configurar S3_BUCKET")
-    import boto3
 
     file.seek(0)
     extra_args = {"ContentType": content_type} if content_type else None
-    boto3.client("s3").upload_fileobj(
+    _s3_client().upload_fileobj(
         file,
         bucket,
         storage_key,
@@ -58,10 +77,9 @@ def s3_download_url(storage_key: str) -> dict:
     bucket = os.getenv("S3_BUCKET")
     if not bucket:
         raise RuntimeError("Falta configurar S3_BUCKET")
-    import boto3
 
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-    url = boto3.client("s3", region_name=os.getenv("AWS_REGION")).generate_presigned_url(
+    url = _s3_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": storage_key},
         ExpiresIn=600,

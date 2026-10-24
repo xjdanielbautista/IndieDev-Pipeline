@@ -105,7 +105,96 @@ Como el backend está en la carpeta `Backend`, configura esa carpeta como **Root
 - `MAX_UPLOAD_MB`: tamaño máximo de cada archivo, 200 MB por defecto si no se define.
 - `LOCAL_UPLOAD_DIR`: carpeta local para `ASSET_STORAGE_PROVIDER=local`.
 - Firebase: `FIREBASE_CREDENTIALS` con la ruta al JSON de la cuenta de servicio y `FIREBASE_BUCKET` con el nombre del bucket.
-- S3: `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY`.
+- S3: `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY`.- Para Supabase Storage: `S3_ENDPOINT_URL`, además de las variables S3 anteriores.
+### Configurar almacenamiento local
+
+Esta opción sirve para desarrollo y no necesita credenciales de Firebase ni AWS:
+
+```bash
+export ASSET_STORAGE_PROVIDER=local
+export LOCAL_UPLOAD_DIR=./uploads
+export MAX_UPLOAD_MB=200
+```
+
+Los archivos se guardan dentro de `Backend/uploads`. Agrega esta carpeta al `.gitignore` si quieres evitar subir archivos binarios al repositorio.
+
+### Configurar Firebase Storage
+
+1. Abre Firebase Console y entra en **Project Settings → Service accounts**.
+2. Selecciona Node.js y pulsa **Generate new private key**.
+3. Guarda el JSON fuera del repositorio, por ejemplo como `~/keys/indiedev-firebase.json`.
+4. Configura el bucket en Firebase Storage y obtén su nombre.
+5. Exporta las variables antes de iniciar Uvicorn:
+
+```bash
+export ASSET_STORAGE_PROVIDER=firebase
+export FIREBASE_CREDENTIALS=/ruta/indiedev-firebase.json
+export FIREBASE_BUCKET=tu-proyecto.appspot.com
+export MAX_UPLOAD_MB=200
+```
+
+`FIREBASE_CREDENTIALS` contiene una clave privada. No la agregues al repositorio, al README, ni la publiques en una captura o imagen.
+
+### Configurar S3
+
+1. Crea un bucket en AWS S3.
+2. Crea un usuario IAM destinado al backend con permisos para subir, consultar y generar URLs firmadas de objetos en ese bucket.
+3. Genera una Access Key para ese usuario.
+4. Exporta las credenciales solo en la terminal o en secretos del servicio:
+
+```bash
+export ASSET_STORAGE_PROVIDER=s3
+export S3_BUCKET=mi-bucket
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=tu-access-key-id
+export AWS_SECRET_ACCESS_KEY=tu-secret-access-key
+export MAX_UPLOAD_MB=200
+```
+
+No uses credenciales personales ni compartas `AWS_SECRET_ACCESS_KEY`. En Render configura esos valores como secretos del servicio y evita escribirlos directamente en el repositorio. La aplicación entrega URLs firmadas válidas durante 10 minutos.
+
+Para Supabase Storage, conserva las variables S3 y agrega el endpoint S3 mostrado en Supabase. No uses la `anon key` ni la `service role key` como credenciales AWS:
+
+```bash
+export ASSET_STORAGE_PROVIDER=s3
+export S3_BUCKET=nombre-del-bucket
+export S3_ENDPOINT_URL=https://<project-ref>.storage.supabase.co/storage/v1/s3
+export AWS_REGION=<region>
+export AWS_ACCESS_KEY_ID=<s3-access-key>
+export AWS_SECRET_ACCESS_KEY=<s3-secret-key>
+export MAX_UPLOAD_MB=50
+```
+
+El backend detecta `S3_ENDPOINT_URL` y configura automáticamente firma SigV4 y direccionamiento por ruta, compatible con el endpoint S3 de Supabase. Reinicia Uvicorn después de exportar las variables.
+
+### Variables generales para reiniciar el backend
+
+Después de cambiar las variables, reinicia Uvicorn. Las variables exportadas solo existen en la terminal donde las ejecutaste:
+
+```bash
+export SECRET_KEY="$(openssl rand -hex 32)"
+export DATABASE_URL='mysql+pymysql://usuario:password@localhost:3306/indiedev'
+alembic upgrade head
+uvicorn app.main:app --reload
+
+### Guardar las variables en un archivo local
+
+Dentro de `Backend` puedes copiar el archivo de ejemplo y completar los datos:
+
+```bash
+cp .env.example .env.local
+```
+
+Luego carga todas las variables en la terminal actual sin exportarlas una por una:
+
+```bash
+source ./load-env.sh
+```
+
+`.env.local` y cualquier archivo `.env` deben ignorarse en Git; `.env.example` sí puede publicarse siempre que no contenga secretos reales. El script `load-env.sh` conserva variables de la terminal que ya tengan un valor y solo las reemplaza con las que estén definidas en `.env.local`.
+```
+
+Si trabajas con SQLite local y MySQL ya no tiene prioridad, puedes omitir `DATABASE_URL`. Usa `ASSET_STORAGE_PROVIDER=local` mientras desarrollas si no quieres configurar Firebase o S3.
 
 Si necesitas permitir más de un origen (por ejemplo, el dominio de producción y el de preview), sepáralos con comas en `FRONTEND_ORIGINS`. En Render, usa como comando de inicio:
 
@@ -141,7 +230,7 @@ En Vercel, configura `VITE_API_BASE_URL` con la URL pública del servicio de Ren
 
 Los valores permitidos para `category` son `code` (Código) y `art` (Arte). Los valores de `status` son `backlog` (Backlog), `in_progress` (En proceso), `review` (Revisión) y `done` (Terminado). `assignment_mode` acepta `open` o `restricted`: en modo abierto cualquier integrante del estudio puede cambiar el estado; en modo restringido solo pueden hacerlo los usuarios incluidos en `assigned_user_ids`. Esa lista puede contener varios IDs y cada usuario debe pertenecer al mismo estudio. La base los relaciona mediante `asset_assignments`, de modo que cada usuario puede estar asignado a varios assets y cada asset a varios usuarios. El bloqueo es independiente del flujo Kanban. La respuesta incluye `assigned_users` con ID y nombre de usuario; el historial conserva quién realizó cada cambio y cuándo.
 
-`storage_key` es la clave interna/ruta que usa el backend para localizar el archivo en el proveedor configurado. Actualmente se guardan metadatos; la subida binaria a Firebase/S3 aún no está implementada. El cliente de la página no debe pedirle al usuario que elija un proveedor.
+`storage_key` es la clave interna/ruta que usa el backend para localizar el archivo en el proveedor configurado. El cliente debe enviar el asset y los metadatos; el proveedor se configura exclusivamente en el backend mediante variables de entorno.
 
 Ejemplo de creación para trabajo abierto:
 
@@ -173,4 +262,4 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 
 ## Pendiente
 
-Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub y la subida binaria a Firebase/S3.
+Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación y el esquema de assets; todavía falta versionar con migraciones el resto del esquema. También faltan la recepción/verificación de webhooks de GitHub. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
