@@ -270,3 +270,5 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 ## Pendiente
 
 Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación, assets, comentarios, commits y notificaciones. Todavía falta completar la recepción avanzada de algunos webhooks externos y ampliar las pruebas de integración remota. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
+
+Las bases SQLite locales (`*.db`) están excluidas de Git mediante `.gitignore`; cada entorno debe aplicar sus migraciones con `alembic upgrade head`. Los errores internos no controlados responden JSON 500 y conservan las cabeceras CORS configuradas por el backend.

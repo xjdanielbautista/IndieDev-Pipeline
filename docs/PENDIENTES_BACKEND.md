@@ -172,8 +172,8 @@ El frontend consulta este endpoint cada 30 segundos y al hacer clic en una notif
 
 ## Checklist
 
-- [ ] 1. Subida y descarga de archivos
-- [ ] 2. Webhooks de GitHub y commits por tarea
-- [ ] 3. Comentarios
-- [ ] 4. Notificaciones
+- [✔️] 1. Subida y descarga de archivos
+- [✔️] 2. Webhooks de GitHub y commits por tarea
+- [✔️] 3. Comentarios
+- [✔️] 4. Notificaciones
 - [ ] 5. Limpieza (`indiedev.db`, CORS en 500, migraciones, pruebas)

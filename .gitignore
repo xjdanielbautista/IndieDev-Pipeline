@@ -150,6 +150,8 @@ activemq-data/
 # Environments and local secrets
 .env
 .env.local
+*.db
+*.db-journal
 .env.*.local
 .envrc
 .venv

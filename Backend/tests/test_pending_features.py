@@ -67,6 +67,29 @@ def test_notifications_list_and_mark_read(client, login):
         assert marked.status_code == 204
 
 
+def test_internal_error_has_json_and_cors_headers(client):
+    from fastapi.testclient import TestClient
+    from app import main
+
+    async def fail_for_test():
+        raise RuntimeError("error temporal de prueba")
+
+    main.app.add_api_route("/__test_internal_error", fail_for_test, methods=["GET"])
+    with TestClient(main.app, raise_server_exceptions=False) as error_client:
+        response = error_client.get(
+            "/__test_internal_error",
+            headers={"Origin": "http://localhost:5173"},
+        )
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Error interno del servidor"}
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+    main.app.router.routes[:] = [
+        route for route in main.app.router.routes
+        if getattr(route, "path", None) != "/__test_internal_error"
+    ]
+
+
 def test_github_webhook_signature_and_commits(client, login):
     tenant_id, project_id, asset_id, headers = setup_project(client, login, "github-studio")
 

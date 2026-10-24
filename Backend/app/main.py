@@ -1,5 +1,7 @@
 import hashlib
+import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -8,6 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -112,6 +115,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger = logging.getLogger("indiedev.backend")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Error interno no controlado en %s %s", request.method, request.url.path)
+    response = JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Error interno del servidor"},
+    )
+    origin = request.headers.get("origin")
+    if origin in allowed_origins or "*" in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        response.headers["Vary"] = "Origin"
+        if origin and "*" not in allowed_origins:
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 def require_tenant_membership(db: Session, tenant_id: int, user_id: int) -> Membership:
