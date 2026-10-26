@@ -9,3 +9,4 @@ pwdlib[argon2]>=0.2,<1.0
 python-multipart>=0.0.20,<1.0
 boto3>=1.35,<2.0
 firebase-admin>=6.6,<7.0
+psycopg[binary]>=3.2,<4.0
