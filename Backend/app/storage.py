@@ -14,6 +14,23 @@ def format_file_size(size: int) -> str:
     return f"{size / (1024 * 1024 * 1024):.1f} GB"
 
 
+def tenant_storage_key(tenant_id: int, project_id: int, client_key: str) -> str:
+    """Arma la ruta del archivo en el bucket con el tenant como prefijo.
+
+    El cliente solo sugiere el nombre/ruta relativa; el backend decide la carpeta
+    del estudio y del proyecto. Así los archivos de cada tenant quedan separados
+    (tenants/<id>/projects/<id>/...) y nadie puede escribir en la carpeta de otro
+    estudio usando "../" o una ruta absoluta.
+    """
+    parts = [
+        part
+        for part in client_key.replace("\\", "/").split("/")
+        if part not in ("", ".", "..")
+    ]
+    relative = "/".join(parts) or "archivo"
+    return f"tenants/{tenant_id}/projects/{project_id}/{relative}"[:500]
+
+
 def safe_storage_path(storage_key: str, upload_dir: str | None = None) -> Path:
     root = Path(upload_dir or os.getenv("LOCAL_UPLOAD_DIR", "./uploads")).resolve()
     destination = (root / storage_key.lstrip("/")).resolve()

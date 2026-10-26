@@ -80,6 +80,7 @@ from .security import (
     verify_password,
 )
 from .storage import (
+    tenant_storage_key,
     firebase_download_url,
     format_file_size,
     local_file,
@@ -552,6 +553,8 @@ def create_asset(
     for assigned_user_id in assigned_user_ids:
         require_tenant_membership(db, tenant_id, assigned_user_id)
     asset_fields = payload.model_dump(exclude={"assigned_user_ids"})
+    # Aislamiento en el storage: la carpeta del tenant la impone el backend.
+    asset_fields["storage_key"] = tenant_storage_key(tenant_id, project_id, payload.storage_key)
     provider_name = os.getenv("ASSET_STORAGE_PROVIDER", StorageProvider.FIREBASE.value).lower()
     try:
         storage_provider = StorageProvider(provider_name)
