@@ -43,3 +43,15 @@ def test_asset_lock_requires_tenant_membership(client, login):
     assert locked.status_code == 200
     assert locked.json()["locked_by_user_id"] == tenant["owner_user_id"]
     assert rejected.status_code == 403
+
+
+def test_storage_key_is_prefixed_by_tenant(client, login):
+    owner = login("prefixowner")
+    tenant = client.post("/api/tenants", json={"name": "Prefijo", "slug": "prefijo"}, headers=owner).json()
+    project = client.post(f"/api/tenants/{tenant['id']}/projects", json={"name": "P"}, headers=owner).json()
+    asset = client.post(
+        f"/api/tenants/{tenant['id']}/projects/{project['id']}/assets",
+        json={"original_name": "hero.png", "storage_key": "../../tenants/999/robado.png"},
+        headers=owner,
+    ).json()
+    assert asset["storage_key"] == f"tenants/{tenant['id']}/projects/{project['id']}/tenants/999/robado.png"

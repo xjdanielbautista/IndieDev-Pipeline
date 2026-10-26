@@ -272,3 +272,16 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación, assets, comentarios, commits y notificaciones. Todavía falta completar la recepción avanzada de algunos webhooks externos y ampliar las pruebas de integración remota. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
 
 Las bases SQLite locales (`*.db`) están excluidas de Git mediante `.gitignore`; cada entorno debe aplicar sus migraciones con `alembic upgrade head`. Los errores internos no controlados responden JSON 500 y conservan las cabeceras CORS configuradas por el backend.
+
+## Datos de demo multi-tenant
+
+`scripts/seed_demo.py` crea por la API dos estudios de ejemplo (Pixel Forge Studio y Nebula Games), cada uno con integrantes por rol, un proyecto, tareas en el Kanban y un build. Al final comprueba que el dueño de un estudio recibe 403 al pedir datos del otro. Se puede correr varias veces sin duplicar.
+
+```bash
+python scripts/seed_demo.py                              # backend local
+python scripts/seed_demo.py https://tu-api.onrender.com  # backend desplegado
+```
+
+Contraseña de todos los usuarios de demo: `Demo12345`.
+
+Los archivos de cada asset se guardan con el tenant como prefijo (`tenants/<tenant_id>/projects/<project_id>/...`); la carpeta la decide el backend, no el cliente.
