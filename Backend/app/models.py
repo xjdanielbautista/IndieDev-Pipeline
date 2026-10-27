@@ -244,3 +244,31 @@ class Notification(Base):
     @property
     def read(self) -> bool:
         return self.read_at is not None
+
+
+class TenantActivity(Base):
+    """Bitácora del estudio: acciones administrativas (integrantes, proyectos, tareas, ajustes)."""
+
+    __tablename__ = "tenant_activity"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_username: Mapped[str] = mapped_column(String(50))
+    action: Mapped[str] = mapped_column(String(40))
+    summary: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class LoginThrottle(Base):
+    """Intentos fallidos de inicio de sesión por usuario/correo (protección contra fuerza bruta)."""
+
+    __tablename__ = "login_throttles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    identifier: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    failed_count: Mapped[int] = mapped_column(default=0)
+    first_failed_at: Mapped[datetime] = mapped_column(DateTime)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

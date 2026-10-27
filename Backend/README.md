@@ -285,3 +285,21 @@ python scripts/seed_demo.py https://tu-api.onrender.com  # backend desplegado
 Contraseña de todos los usuarios de demo: `Demo12345`.
 
 Los archivos de cada asset se guardan con el tenant como prefijo (`tenants/<tenant_id>/projects/<project_id>/...`); la carpeta la decide el backend, no el cliente.
+
+## Seguridad y administración del estudio
+
+**Límite de intentos de login.** Tras 5 intentos fallidos en 15 minutos para el mismo usuario o correo, `POST /api/auth/token` responde `429` durante 15 minutos (encabezado `Retry-After`), incluso con la contraseña correcta. Un login exitoso reinicia el contador. Los intentos se guardan en la tabla `login_throttles`, así que el bloqueo sobrevive reinicios. Se ajusta con `MAX_FAILED_LOGINS`, `LOGIN_WINDOW_MINUTES` y `LOGIN_LOCK_MINUTES`.
+
+**Bitácora del estudio.** La tabla `tenant_activity` registra quién hizo qué y cuándo: crear o editar el estudio, agregar o quitar integrantes, cambiar roles, crear, editar o eliminar proyectos y tareas, y conectar GitHub. `GET /api/tenants/{tenant_id}/activity?limit=50` la devuelve (solo dueño y admin).
+
+**Editar y eliminar** (dueño o admin, salvo donde se indica):
+
+| Método | Ruta | Nota |
+| --- | --- | --- |
+| `PATCH` | `/api/tenants/{tenant_id}` | Cambia `name` y/o `slug` (409 si el slug ya existe) |
+| `DELETE` | `/api/tenants/{tenant_id}?confirm=<slug>` | Solo el dueño; exige escribir el identificador. Borra todo el estudio en cascada |
+| `PATCH` | `/api/tenants/{tenant_id}/projects/{project_id}` | Cambia `name` y/o `description` |
+| `DELETE` | `/api/tenants/{tenant_id}/projects/{project_id}` | Borra el proyecto con sus tareas y builds |
+| `DELETE` | `/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}` | Borra una tarea |
+
+Las tablas nuevas se crean solas al arrancar la API. Los borrados dependen de `ON DELETE CASCADE`; en SQLite se activa con `PRAGMA foreign_keys=ON` en `app/database.py`.

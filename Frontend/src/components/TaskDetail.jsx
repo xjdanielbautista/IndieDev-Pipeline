@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { History, Lock, RotateCcw, Unlock, Users, X } from "lucide-react";
-import { getAssetHistory, lockAsset, unlockAsset, updateAsset } from "../api/studio";
+import { History, Lock, RotateCcw, Trash2, Unlock, Users, X } from "lucide-react";
+import { deleteAsset, getAssetHistory, lockAsset, unlockAsset, updateAsset } from "../api/studio";
 import { CATEGORIES, STATUSES, describeChange, formatDateTime, timeAgo } from "../utils/labels";
 import { canLock, canMove, isManager } from "../utils/permissions";
 import { Avatar, inputClass, Label, useToast } from "./ui";
@@ -36,12 +36,25 @@ function buildRevert(entry, asset, members) {
   }
 }
 
-export default function TaskDetail({ asset, tenant, projectId, members, currentUser, role, onChanged, onClose }) {
+export default function TaskDetail({ asset, tenant, projectId, members, currentUser, role, onChanged, onDeleted, onClose }) {
   const notify = useToast();
   const manager = isManager(role);
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const removeTask = async () => {
+    setBusy(true);
+    try {
+      await deleteAsset(tenant.id, projectId, asset.id);
+      notify(`Tarea "${asset.original_name}" eliminada`, "success");
+      onDeleted?.(asset.id);
+    } catch (err) {
+      if (err.status !== 401) notify(err.message);
+      setBusy(false);
+    }
+  };
 
   const loadHistory = useCallback(async () => {
     try {
@@ -137,9 +150,41 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
               Creada por {asset.created_by?.username ?? "—"} · {formatDateTime(asset.created_at)}
             </p>
           </div>
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-white rounded" aria-label="Cerrar">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {manager && onDeleted && !confirmDelete && (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                disabled={busy}
+                title="Eliminar tarea"
+                className="p-1 text-gray-400 hover:text-[#FF3D00] rounded disabled:opacity-40"
+                aria-label="Eliminar tarea"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            )}
+            {confirmDelete && (
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-[#ffb8a3]">¿Eliminar?</span>
+                <button
+                  onClick={removeTask}
+                  disabled={busy}
+                  className="px-2 py-1 rounded bg-[#FF3D00] text-black font-semibold disabled:opacity-40"
+                >
+                  Sí
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={busy}
+                  className="px-2 py-1 rounded border border-[#272B3B] text-gray-300 hover:text-white"
+                >
+                  No
+                </button>
+              </div>
+            )}
+            <button onClick={onClose} className="p-1 text-gray-400 hover:text-white rounded" aria-label="Cerrar">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">

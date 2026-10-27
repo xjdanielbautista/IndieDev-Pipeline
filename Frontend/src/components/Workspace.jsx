@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Table2, Users } from "lucide-react";
+import { BarChart3, Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Settings, Table2, Users } from "lucide-react";
 import ApiStatus from "./ApiStatus";
 import AssetVault from "./AssetVault";
 import BuildHistory from "./BuildHistory";
 import KanbanBoard from "./KanbanBoard";
 import NotificationsBell from "./NotificationsBell";
 import ProjectSummary from "./ProjectSummary";
+import StudioSettings from "./StudioSettings";
 import TaskDetail from "./TaskDetail";
 import TeamPanel from "./TeamPanel";
 import { CreateBuildForm, CreateProjectForm, CreateStudioForm, CreateTaskForm } from "./forms";
@@ -110,6 +111,33 @@ export default function Workspace({ currentUser, onLogout }) {
 
   const tenant = tenants?.find((t) => t.id === tenantId) ?? null;
   const project = projects?.find((p) => p.id === projectId) ?? null;
+
+  const handleTenantUpdated = (updated) =>
+    setTenants((prev) => prev.map((t) => (t.id === updated.id ? { ...t, ...updated } : t)));
+
+  const handleTenantDeleted = (deletedId) => {
+    const remaining = tenants.filter((t) => t.id !== deletedId);
+    setTenants(remaining);
+    setTab("board");
+    setProjects(null);
+    setProjectId(null);
+    setAssets([]);
+    setBuilds([]);
+    setTenantId(remaining[0]?.id ?? null);
+  };
+
+  const handleProjectUpdated = (updated) =>
+    setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+
+  const handleProjectDeleted = (deletedId) => {
+    const remaining = projects.filter((p) => p.id !== deletedId);
+    setProjects(remaining);
+    setAssets([]);
+    setBuilds([]);
+    setOpenAssetId(null);
+    setTab("board");
+    setProjectId(remaining[0]?.id ?? null);
+  };
 
   // 1) Estudios del usuario
   useEffect(() => {
@@ -247,6 +275,9 @@ export default function Workspace({ currentUser, onLogout }) {
     { id: "team", label: `Equipo (${members.length})`, icon: Users },
   ];
   const manager = isManager(tenant.role);
+  if (manager) tabs.push({ id: "settings", label: "Ajustes", icon: Settings });
+  // Ajustes solo existe para dueño/admin; si cambias a un estudio donde no lo eres, se muestra el tablero.
+  const view = tab === "settings" && !manager ? "board" : tab;
   const latestBuild = [...builds].sort((a, b) => b.id - a.id)[0];
 
   return (
@@ -339,7 +370,7 @@ export default function Workspace({ currentUser, onLogout }) {
               key={id}
               onClick={() => setTab(id)}
               className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors whitespace-nowrap shrink-0 ${
-                tab === id ? "bg-[#1C202D] text-white border border-[#272B3B]" : "text-gray-400 hover:text-white hover:bg-[#151822] border border-transparent"
+                view === id ? "bg-[#1C202D] text-white border border-[#272B3B]" : "text-gray-400 hover:text-white hover:bg-[#151822] border border-transparent"
               }`}
             >
               <Icon className="w-4 h-4" /> {label}
@@ -347,7 +378,7 @@ export default function Workspace({ currentUser, onLogout }) {
           ))}
         </nav>
 
-        {(tab === "board" || tab === "vault") && (
+        {(view === "board" || view === "vault") && (
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-full sm:w-auto">
               <Search className="absolute left-2.5 top-2 w-4 h-4 text-gray-500" />
@@ -402,7 +433,7 @@ export default function Workspace({ currentUser, onLogout }) {
       </div>
 
       <main className="flex-1 min-h-0 overflow-auto p-4 md:p-6">
-        {tab === "board" && assets.length === 0 && !loadingBoard ? (
+        {view === "board" && assets.length === 0 && !loadingBoard ? (
           <div className="max-w-md mx-auto mt-16 text-center">
             <Code className="w-10 h-10 mx-auto text-[#00F0FF] mb-3" />
             <h2 className="text-white text-lg font-semibold mb-1">Tu tablero está vacío</h2>
@@ -420,7 +451,7 @@ export default function Workspace({ currentUser, onLogout }) {
               <p className="text-sm text-gray-500">El dueño o un admin todavía no crean tareas para {project.name}.</p>
             )}
           </div>
-        ) : tab === "board" ? (
+        ) : view === "board" ? (
           <>
             {lockedCount > 0 && (
               <p className="text-xs text-[#FF3D00] mb-3 font-mono">
@@ -435,9 +466,9 @@ export default function Workspace({ currentUser, onLogout }) {
               onChangeStatus={changeStatus}
             />
           </>
-        ) : tab === "vault" ? (
+        ) : view === "vault" ? (
           <AssetVault assets={filteredAssets} members={members} onOpen={(a) => setOpenAssetId(a.id)} />
-        ) : tab === "summary" ? (
+        ) : view === "summary" ? (
           <ProjectSummary
             project={project}
             assets={assets}
@@ -445,8 +476,17 @@ export default function Workspace({ currentUser, onLogout }) {
             builds={builds}
             onOpen={(a) => setOpenAssetId(a.id)}
           />
-        ) : tab === "builds" ? (
+        ) : view === "builds" ? (
           <BuildHistory builds={builds} onNew={canBuild(tenant.role) ? () => setModal("build") : null} />
+        ) : view === "settings" ? (
+          <StudioSettings
+            tenant={tenant}
+            project={project}
+            onTenantUpdated={handleTenantUpdated}
+            onTenantDeleted={handleTenantDeleted}
+            onProjectUpdated={handleProjectUpdated}
+            onProjectDeleted={handleProjectDeleted}
+          />
         ) : (
           <TeamPanel
             tenant={tenant}
@@ -470,6 +510,10 @@ export default function Workspace({ currentUser, onLogout }) {
           currentUser={currentUser}
           role={tenant.role}
           onChanged={replaceAsset}
+          onDeleted={(deletedId) => {
+            setAssets((prev) => prev.filter((a) => a.id !== deletedId));
+            setOpenAssetId(null);
+          }}
           onClose={() => setOpenAssetId(null)}
         />
       )}
