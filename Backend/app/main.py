@@ -6,13 +6,13 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,12 +27,14 @@ from .models import (
     AssetStatus,
     Build,
     MemberRole,
+    LoginThrottle,
     Membership,
     Notification,
     Project,
     StorageProvider,
     Task,
     Tenant,
+    TenantActivity,
     User,
 )
 from .schemas import (
@@ -55,11 +57,14 @@ from .schemas import (
     NotificationReadUpdate,
     ProjectCreate,
     ProjectRead,
+    ProjectUpdate,
     TaskCreate,
     TaskRead,
+    TenantActivityRead,
     TenantCreate,
     TenantMembershipRead,
     TenantRead,
+    TenantUpdate,
     Token,
     UserRead,
     UserRegister,
@@ -200,6 +205,81 @@ def add_notification(
     ))
 
 
+# ---------- Protección contra fuerza bruta en el login ----------
+# Tras MAX_FAILED_LOGINS intentos fallidos dentro de LOGIN_WINDOW_MINUTES, el usuario/correo
+# queda bloqueado LOGIN_LOCK_MINUTES. Se guarda en la base para que sobreviva reinicios.
+MAX_FAILED_LOGINS = int(os.getenv("MAX_FAILED_LOGINS", "5"))
+LOGIN_WINDOW_MINUTES = int(os.getenv("LOGIN_WINDOW_MINUTES", "15"))
+LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
+
+
+def utcnow() -> datetime:
+    """Hora UTC sin zona (así la guardan igual SQLite, MySQL y PostgreSQL)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def too_many_attempts(locked_until: datetime, now: datetime) -> HTTPException:
+    seconds = max(int((locked_until - now).total_seconds()), 1)
+    minutes = -(-seconds // 60)
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Demasiados intentos fallidos. Intenta de nuevo en {minutes} minuto(s).",
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+def register_failed_login(
+    db: Session, throttle: LoginThrottle | None, identifier: str, now: datetime
+) -> datetime | None:
+    """Cuenta un intento fallido. Devuelve la hora de desbloqueo si con este se bloquea."""
+    window_start = now - timedelta(minutes=LOGIN_WINDOW_MINUTES)
+    if throttle is None:
+        # Limpieza de registros viejos para que la tabla no crezca sin límite.
+        db.execute(
+            delete(LoginThrottle).where(
+                LoginThrottle.first_failed_at < now - timedelta(days=1),
+                or_(LoginThrottle.locked_until.is_(None), LoginThrottle.locked_until < now),
+            )
+        )
+        throttle = LoginThrottle(identifier=identifier, failed_count=0, first_failed_at=now)
+        db.add(throttle)
+    elif throttle.first_failed_at < window_start or throttle.locked_until is not None:
+        throttle.failed_count = 0
+        throttle.first_failed_at = now
+        throttle.locked_until = None
+
+    throttle.failed_count += 1
+    if throttle.failed_count >= MAX_FAILED_LOGINS:
+        throttle.locked_until = now + timedelta(minutes=LOGIN_LOCK_MINUTES)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Dos intentos simultáneos crearon el mismo registro; basta con uno.
+        db.rollback()
+        return None
+    return throttle.locked_until
+
+
+# ---------- Bitácora del estudio ----------
+def log_activity(db: Session, tenant_id: int, actor: User, action: str, summary: str) -> None:
+    """Agrega una entrada a la bitácora; se guarda con el commit de la acción."""
+    db.add(
+        TenantActivity(
+            tenant_id=tenant_id,
+            user_id=actor.id,
+            actor_username=(actor.username or actor.email)[:50],
+            action=action,
+            summary=summary[:300],
+        )
+    )
+
+
+def display_name(user: User | None) -> str:
+    if user is None:
+        return "usuario eliminado"
+    return user.username or user.email
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "indie-dev-pipeline-api"}
@@ -241,6 +321,11 @@ def login_for_access_token(
     db: Session = Depends(get_db),
 ):
     identifier = username.strip().lower()
+    now = utcnow()
+    throttle = db.scalar(select(LoginThrottle).where(LoginThrottle.identifier == identifier[:255]))
+    if throttle is not None and throttle.locked_until is not None and throttle.locked_until > now:
+        raise too_many_attempts(throttle.locked_until, now)
+
     user = db.scalar(
         select(User).where(
             or_(
@@ -250,11 +335,17 @@ def login_for_access_token(
         )
     )
     if user is None or not verify_password(password, user.password_hash):
+        locked_until = register_failed_login(db, throttle, identifier[:255], now)
+        if locked_until is not None:
+            raise too_many_attempts(locked_until, now)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nombre de usuario/correo o contraseña incorrectos",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if throttle is not None:
+        db.delete(throttle)
+        db.commit()
     return Token(access_token=create_access_token(user.id))
 
 
@@ -274,6 +365,7 @@ def create_tenant(
     try:
         db.flush()
         db.add(Membership(tenant_id=tenant.id, user_id=current_user.id, role=MemberRole.OWNER))
+        log_activity(db, tenant.id, current_user, "tenant_created", f"Creó el estudio \"{tenant.name}\"")
         db.commit()
         db.refresh(tenant)
     except IntegrityError as error:
@@ -373,6 +465,10 @@ def add_tenant_member(
     if exists is not None:
         raise HTTPException(status_code=409, detail="Ese usuario ya es integrante del estudio")
     db.add(Membership(tenant_id=tenant_id, user_id=user.id, role=payload.role))
+    log_activity(
+        db, tenant_id, current_user, "member_added",
+        f"Agregó a {display_name(user)} como {payload.role.value}",
+    )
     db.commit()
     return member_read(user, payload.role)
 
@@ -388,7 +484,14 @@ def update_tenant_member(
     actor = require_tenant_membership(db, tenant_id, current_user.id)
     target = get_member(db, tenant_id, user_id)
     require_can_manage_member(actor, target, payload.role)
+    previous_role = target.role
     target.role = payload.role
+    if previous_role != payload.role:
+        log_activity(
+            db, tenant_id, current_user, "member_role_changed",
+            f"Cambió el rol de {display_name(db.get(User, user_id))}: "
+            f"{previous_role.value} → {payload.role.value}",
+        )
     db.commit()
     return member_read(db.get(User, user_id), payload.role)
 
@@ -416,6 +519,10 @@ def remove_tenant_member(
     ).all():
         asset.locked_by_user_id = None
         asset.locked_at = None
+    log_activity(
+        db, tenant_id, current_user, "member_removed",
+        f"Quitó a {display_name(db.get(User, user_id))} del estudio",
+    )
     db.delete(target)
     db.commit()
 
@@ -437,6 +544,7 @@ def create_project(
         raise HTTPException(status_code=404, detail="Estudio no encontrado")
     project = Project(tenant_id=tenant_id, **payload.model_dump())
     db.add(project)
+    log_activity(db, tenant_id, current_user, "project_created", f"Creó el proyecto \"{project.name}\"")
     db.commit()
     db.refresh(project)
     return project
@@ -570,6 +678,7 @@ def create_asset(
     asset.assignments.extend(AssetAssignment(user_id=user_id) for user_id in assigned_user_ids)
     db.add(asset)
     db.flush()
+    log_activity(db, tenant_id, current_user, "asset_created", f"Creó la tarea \"{asset.original_name}\"")
     record_asset_change(
         db,
         asset,
@@ -1021,6 +1130,10 @@ def connect_github(
     webhook_secret = secrets.token_hex(32)
     project.github_repo = payload.github_repo.strip()
     project.github_webhook_secret = webhook_secret
+    log_activity(
+        db, tenant_id, current_user, "github_connected",
+        f"Conectó el proyecto \"{project.name}\" con GitHub ({project.github_repo})",
+    )
     db.commit()
     public_base = os.getenv("PUBLIC_BACKEND_URL", str(request.base_url).rstrip("/"))
     return GithubConnectRead(
@@ -1154,3 +1267,156 @@ def mark_notifications_read(payload: NotificationReadUpdate, db: Session = Depen
         notification.read_at = datetime.now(timezone.utc)
     db.commit()
     return Response(status_code=204)
+
+
+# =====================================================================
+# Administración del estudio: editar/eliminar estudio, proyectos y tareas,
+# y bitácora de actividad. Solo dueño/admin (y borrar el estudio, solo el dueño).
+# =====================================================================
+
+
+@app.patch("/api/tenants/{tenant_id}", response_model=TenantRead)
+def update_tenant(
+    tenant_id: int,
+    payload: TenantUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "editar el estudio")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+
+    changes = []
+    if payload.name is not None and payload.name.strip() and payload.name.strip() != tenant.name:
+        changes.append(f"nombre \"{tenant.name}\" → \"{payload.name.strip()}\"")
+        tenant.name = payload.name.strip()
+    if payload.slug is not None and payload.slug != tenant.slug:
+        changes.append(f"identificador {tenant.slug} → {payload.slug}")
+        tenant.slug = payload.slug
+    if changes:
+        log_activity(db, tenant_id, current_user, "tenant_updated", "Cambió " + " y ".join(changes))
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Ese identificador ya lo usa otro estudio") from error
+    db.refresh(tenant)
+    return tenant
+
+
+@app.delete("/api/tenants/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tenant(
+    tenant_id: int,
+    confirm: str = "",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Elimina el estudio y, por la cascada de llaves foráneas, todos sus datos.
+
+    Por seguridad exige `?confirm=<identificador del estudio>`.
+    """
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    if membership.role != MemberRole.OWNER:
+        raise HTTPException(status_code=403, detail="Solo el dueño puede eliminar el estudio")
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    if confirm != tenant.slug:
+        raise HTTPException(
+            status_code=400,
+            detail="Para confirmar, escribe exactamente el identificador del estudio",
+        )
+    db.delete(tenant)
+    db.commit()
+
+
+@app.get("/api/tenants/{tenant_id}/activity", response_model=list[TenantActivityRead])
+def list_tenant_activity(
+    tenant_id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "ver la bitácora del estudio")
+    limit = min(max(limit, 1), 200)
+    return db.scalars(
+        select(TenantActivity)
+        .where(TenantActivity.tenant_id == tenant_id)
+        .order_by(TenantActivity.created_at.desc(), TenantActivity.id.desc())
+        .limit(limit)
+    ).all()
+
+
+@app.patch("/api/tenants/{tenant_id}/projects/{project_id}", response_model=ProjectRead)
+def update_project(
+    tenant_id: int,
+    project_id: int,
+    payload: ProjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "editar proyectos")
+    project = get_project(db, tenant_id, project_id)
+    previous_name = project.name
+    fields = payload.model_dump(exclude_unset=True)
+    if "name" in fields and fields["name"] is not None:
+        project.name = fields["name"].strip()
+    if "description" in fields:
+        project.description = (fields["description"] or "").strip() or None
+    summary = (
+        f"Renombró el proyecto \"{previous_name}\" a \"{project.name}\""
+        if project.name != previous_name
+        else f"Editó el proyecto \"{project.name}\""
+    )
+    log_activity(db, tenant_id, current_user, "project_updated", summary)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@app.delete("/api/tenants/{tenant_id}/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    tenant_id: int,
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "eliminar proyectos")
+    project = get_project(db, tenant_id, project_id)
+    log_activity(
+        db, tenant_id, current_user, "project_deleted",
+        f"Eliminó el proyecto \"{project.name}\" con todas sus tareas y builds",
+    )
+    db.delete(project)
+    db.commit()
+
+
+@app.delete(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_asset(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    require_manager(membership, "eliminar tareas")
+    get_project(db, tenant_id, project_id)
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id, Asset.tenant_id == tenant_id, Asset.project_id == project_id
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    log_activity(db, tenant_id, current_user, "asset_deleted", f"Eliminó la tarea \"{asset.original_name}\"")
+    db.delete(asset)
+    db.commit()

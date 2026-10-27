@@ -11,6 +11,13 @@ export const listMyTenants = () => apiFetch("/api/tenants");
 export const createTenant = (name, slug) =>
   apiFetch("/api/tenants", { method: "POST", body: { name, slug } });
 export const listMembers = (tenantId) => apiFetch(`/api/tenants/${tenantId}/members`);
+export const updateTenant = (tenantId, changes) =>
+  apiFetch(`/api/tenants/${tenantId}`, { method: "PATCH", body: changes });
+// Por seguridad el backend exige escribir el identificador (slug) del estudio para borrarlo.
+export const deleteTenant = (tenantId, confirmSlug) =>
+  apiFetch(`/api/tenants/${tenantId}?confirm=${encodeURIComponent(confirmSlug)}`, { method: "DELETE" });
+// Bitácora del estudio (solo dueño/admin).
+export const listActivity = (tenantId) => apiFetch(`/api/tenants/${tenantId}/activity?limit=100`);
 
 // ---- Proyectos ----
 export const listProjects = (tenantId) => apiFetch(`/api/tenants/${tenantId}/projects`);
@@ -20,6 +27,11 @@ export const createProject = (tenantId, name, description) =>
     body: { name, description: description || null },
   });
 
+export const updateProject = (tenantId, projectId, changes) =>
+  apiFetch(base(tenantId, projectId), { method: "PATCH", body: changes });
+export const deleteProject = (tenantId, projectId) =>
+  apiFetch(base(tenantId, projectId), { method: "DELETE" });
+
 // ---- Tareas del tablero (assets en el backend) ----
 export const listAssets = (tenantId, projectId) => apiFetch(`${base(tenantId, projectId)}/assets`);
 
@@ -28,6 +40,9 @@ export const createAsset = (tenantId, projectId, data) =>
 
 export const updateAsset = (tenantId, projectId, assetId, changes) =>
   apiFetch(`${base(tenantId, projectId)}/assets/${assetId}`, { method: "PATCH", body: changes });
+
+export const deleteAsset = (tenantId, projectId, assetId) =>
+  apiFetch(`${base(tenantId, projectId)}/assets/${assetId}`, { method: "DELETE" });
 
 export const lockAsset = (tenantId, projectId, assetId) =>
   apiFetch(`${base(tenantId, projectId)}/assets/${assetId}/lock`, { method: "PATCH", body: {} });
