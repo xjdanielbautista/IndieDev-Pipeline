@@ -82,6 +82,9 @@ class User(Base):
     # Nullable so existing users can be migrated and assigned credentials later.
     username: Mapped[str | None] = mapped_column(String(50), unique=True, index=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Hora UTC (sin zona) del último cambio de contraseña. Los tokens emitidos
+    # antes de esa hora dejan de ser válidos.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Membership(Base):
@@ -272,3 +275,22 @@ class LoginThrottle(Base):
     failed_count: Mapped[int] = mapped_column(default=0)
     first_failed_at: Mapped[datetime] = mapped_column(DateTime)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PasswordResetToken(Base):
+    """Enlace de un solo uso para restablecer la contraseña.
+
+    Solo se guarda el SHA-256 del token: quien lea la base no puede usar los enlaces.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", name="fk_password_reset_tokens_user_id_users", ondelete="CASCADE"),
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

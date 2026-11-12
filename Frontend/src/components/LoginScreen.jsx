@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ArrowRight, Code, Lock, Mail, User } from "lucide-react";
 import ApiStatus from "./ApiStatus";
-import { login, register } from "../api/auth";
+import { confirmPasswordReset, login, register, requestPasswordReset } from "../api/auth";
+import { clearResetTokenFromUrl, getResetTokenFromUrl } from "../utils/resetToken";
 
 const inputClasses =
   "w-full bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-lg pl-10 pr-4 py-2.5 focus:outline-none focus:border-[#00F0FF] focus:ring-1 focus:ring-[#00F0FF] transition-colors";
@@ -19,26 +20,52 @@ function Field({ label, icon: Icon, ...inputProps }) {
 }
 
 export default function LoginScreen({ onLoggedIn, notice }) {
-  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [resetToken] = useState(getResetTokenFromUrl);
+  // "login" | "register" | "forgot" (pedir enlace) | "reset" (nueva contraseña)
+  const [mode, setMode] = useState(resetToken ? "reset" : "login");
   const [identifier, setIdentifier] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
 
   const isRegister = mode === "register";
+  const isForgot = mode === "forgot";
+  const isReset = mode === "reset";
 
   const switchMode = (newMode) => {
     setMode(newMode);
     setError("");
+    setInfo("");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setInfo("");
+    if (isReset && password !== confirmPassword) {
+      setError("Las contraseñas no coinciden");
+      return;
+    }
     setLoading(true);
     try {
+      if (isForgot) {
+        const data = await requestPasswordReset(email.trim());
+        setInfo(data?.detail || "Revisa tu correo.");
+        return;
+      }
+      if (isReset) {
+        await confirmPasswordReset(resetToken, password);
+        clearResetTokenFromUrl();
+        setPassword("");
+        setConfirmPassword("");
+        setMode("login");
+        setInfo("Tu contraseña se actualizó. Ya puedes iniciar sesión.");
+        return;
+      }
       if (isRegister) {
         await register({ username: username.trim(), email: email.trim(), password });
         // Tras registrarse, inicia sesión directamente con lo que escribió.
@@ -81,7 +108,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
               type="button"
               onClick={() => switchMode(id)}
               className={`py-2 text-sm rounded-md transition-colors ${
-                mode === id ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
+                mode === id || (id === "login" && (isForgot || isReset)) ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
               }`}
             >
               {label}
@@ -89,12 +116,35 @@ export default function LoginScreen({ onLoggedIn, notice }) {
           ))}
         </div>
 
-        {notice && !error && (
+        {(isForgot || isReset) && (
+          <p className="mb-4 text-xs text-gray-400">
+            {isForgot
+              ? "Escribe el correo de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
+              : "Elige tu nueva contraseña. Al guardarla se cerrarán las sesiones abiertas."}
+          </p>
+        )}
+
+        {info && !error && (
+          <p className="mb-4 text-xs text-emerald-400 bg-emerald-400/10 border border-emerald-400/30 rounded p-2">{info}</p>
+        )}
+
+        {notice && !error && !info && (
           <p className="mb-4 text-xs text-yellow-400 bg-yellow-400/10 border border-yellow-400/30 rounded p-2">{notice}</p>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {isRegister ? (
+          {isForgot ? (
+            <Field
+              label="email"
+              icon={Mail}
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="alex@pixelninja.dev"
+              autoComplete="email"
+              required
+            />
+          ) : isReset ? null : isRegister ? (
             <>
               <Field
                 label="username"
@@ -134,18 +184,46 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             />
           )}
 
-          <Field
-            label="password"
-            icon={Lock}
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={isRegister ? "new-password" : "current-password"}
-            required
-            minLength={isRegister ? 8 : undefined}
-            maxLength={128}
-            placeholder={isRegister ? "Mínimo 8 caracteres" : ""}
-          />
+          {!isForgot && (
+            <Field
+              label={isReset ? "nueva password" : "password"}
+              icon={Lock}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={isRegister || isReset ? "new-password" : "current-password"}
+              required
+              minLength={isRegister || isReset ? 8 : undefined}
+              maxLength={128}
+              placeholder={isRegister || isReset ? "Mínimo 8 caracteres" : ""}
+            />
+          )}
+
+          {isReset && (
+            <Field
+              label="confirmar password"
+              icon={Lock}
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              autoComplete="new-password"
+              required
+              minLength={8}
+              maxLength={128}
+            />
+          )}
+
+          {mode === "login" && (
+            <div className="-mt-3 text-right">
+              <button
+                type="button"
+                onClick={() => switchMode("forgot")}
+                className="text-xs text-gray-400 hover:text-[#00F0FF] transition-colors"
+              >
+                ¿Olvidaste tu contraseña?
+              </button>
+            </div>
+          )}
 
           {error && (
             <p className="text-xs text-[#FF3D00] bg-[#FF3D00]/10 border border-[#FF3D00]/30 rounded p-2 whitespace-pre-line">
@@ -158,10 +236,35 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             disabled={loading}
             className="w-full mt-2 bg-[#00F0FF] hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-wait text-black font-bold rounded-lg px-4 py-3 transition-colors shadow-[0_0_15px_rgba(0,240,255,0.4)] flex justify-center items-center gap-2 group focus-visible:ring-2 focus-visible:ring-white"
           >
-            <span>{loading ? "CONECTANDO..." : isRegister ? "CREAR CUENTA" : "INICIAR SESIÓN"}</span>
+            <span>
+              {loading
+                ? "CONECTANDO..."
+                : isForgot
+                  ? "ENVIAR ENLACE"
+                  : isReset
+                    ? "GUARDAR CONTRASEÑA"
+                    : isRegister
+                      ? "CREAR CUENTA"
+                      : "INICIAR SESIÓN"}
+            </span>
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </button>
         </form>
+
+        {(isForgot || isReset) && (
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                if (isReset) clearResetTokenFromUrl();
+                switchMode("login");
+              }}
+              className="text-xs text-gray-400 hover:text-white transition-colors"
+            >
+              ← Volver a iniciar sesión
+            </button>
+          </div>
+        )}
 
         <div className="mt-6 text-center text-xs font-mono text-gray-400">
           <ApiStatus />

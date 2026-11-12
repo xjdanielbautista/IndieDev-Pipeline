@@ -32,6 +32,26 @@ export function getCurrentUser() {
   return apiFetch("/api/auth/me");
 }
 
+// POST /api/auth/password-reset/request -> { detail }
+// Responde lo mismo exista o no el correo.
+export function requestPasswordReset(email) {
+  return apiFetch("/api/auth/password-reset/request", {
+    method: "POST",
+    auth: false,
+    body: { email },
+  });
+}
+
+// POST /api/auth/password-reset/confirm -> 204
+// El token llega en el enlace del correo (?reset_token=...).
+export function confirmPasswordReset(token, newPassword) {
+  return apiFetch("/api/auth/password-reset/confirm", {
+    method: "POST",
+    auth: false,
+    body: { token, new_password: newPassword },
+  });
+}
+
 export function logout() {
   clearToken();
 }

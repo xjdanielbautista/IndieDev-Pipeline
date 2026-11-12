@@ -40,9 +40,10 @@ def verify_password(password: str, hashed_password: str | None) -> bool:
 
 
 def create_access_token(user_id: int) -> str:
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    issued_at = datetime.now(timezone.utc)
+    expires_at = issued_at + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode(
-        {"sub": str(user_id), "exp": expires_at},
+        {"sub": str(user_id), "iat": issued_at.timestamp(), "exp": expires_at},
         _secret_key(),
         algorithm=JWT_ALGORITHM,
     )
@@ -67,4 +68,10 @@ async def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise credentials_error
+    # Tras cambiar la contraseña, las sesiones abiertas antes de ese momento se cierran.
+    if user.password_changed_at is not None:
+        changed_at = user.password_changed_at.replace(tzinfo=timezone.utc).timestamp()
+        issued_at = payload.get("iat")
+        if not isinstance(issued_at, (int, float)) or issued_at < changed_at:
+            raise credentials_error
     return user
