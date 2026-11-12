@@ -800,6 +800,7 @@ def update_asset(
         raise HTTPException(status_code=404, detail="Asset no encontrado")
 
     changes = payload.model_dump(exclude_unset=True)
+    previous_status = asset.status
     if any(field in changes for field in ("category", "assignment_mode", "assigned_user_ids")):
         require_manager(membership, "cambiar el tipo o los asignados de una tarea")
     if "status" in changes and changes["status"] is not None:
@@ -872,23 +873,23 @@ def update_asset(
     if asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value and not asset.assigned_user_ids:
         raise HTTPException(status_code=422, detail="El modo restringido requiere al menos un integrante asignado")
 
-    if "status" in changes and changes["status"] is not None:
-        new_status = changes["status"] if isinstance(changes["status"], str) else changes["status"].value
-        if new_status == AssetStatus.REVIEW.value:
-            tester_memberships = db.scalars(
-                select(Membership).where(Membership.tenant_id == tenant_id, Membership.role == MemberRole.TESTER)
-            ).all()
-            for tester_membership in tester_memberships:
-                add_notification(
-                    db,
-                    tester_membership.user_id,
-                    current_user.id,
-                    tenant_id,
-                    project_id,
-                    asset.id,
-                    "review",
-                    f"\"{asset.original_name}\" está listo para revisión",
-                )
+    # Solo avisa a los testers cuando la tarea realmente entra a revisión
+    # (no si ya estaba en "review" y se reenvía el mismo estado).
+    if asset.status != previous_status and asset.status == AssetStatus.REVIEW.value:
+        tester_memberships = db.scalars(
+            select(Membership).where(Membership.tenant_id == tenant_id, Membership.role == MemberRole.TESTER)
+        ).all()
+        for tester_membership in tester_memberships:
+            add_notification(
+                db,
+                tester_membership.user_id,
+                current_user.id,
+                tenant_id,
+                project_id,
+                asset.id,
+                "review",
+                f"\"{asset.original_name}\" está listo para revisión",
+            )
 
     db.commit()
     db.refresh(asset)
@@ -1021,7 +1022,7 @@ def unlock_asset(
     "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file",
     response_model=AssetRead,
 )
-async def upload_asset_file(
+def upload_asset_file(  # sin async: la subida a S3/Firebase es bloqueante y así corre en un hilo aparte
     tenant_id: int,
     project_id: int,
     asset_id: int,
