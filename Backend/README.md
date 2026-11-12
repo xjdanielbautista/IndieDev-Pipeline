@@ -97,7 +97,7 @@ El comando pide correo, nombre de usuario y contraseña de forma interactiva, si
 
 Como el backend está en la carpeta `Backend`, configura esa carpeta como **Root Directory** del servicio en Render y estas variables de entorno:
 
-- `DATABASE_URL`: URL de conexión a la base de datos MySQL accesible desde Render.
+- `DATABASE_URL`: URL de conexión a la base de datos accesible desde Render. Puedes pegar tal cual la URL de PostgreSQL que entrega Render (`postgres://...` o `postgresql://...`): el backend la ajusta al driver `psycopg`. Para MySQL usa `mysql+pymysql://...`.
 - `FRONTEND_ORIGINS`: dominio del frontend publicado en Vercel, por ejemplo `https://mi-proyecto.vercel.app`. No agregues una ruta como `/dashboard`.
 - `SECRET_KEY`: valor aleatorio generado con `openssl rand -hex 32`; guárdalo como secreto y no lo compartas.
 - `ACCESS_TOKEN_EXPIRE_MINUTES`: duración opcional del token en minutos (30 por defecto).
@@ -269,7 +269,9 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 
 ## Pendiente
 
-Verificación de correo, recuperación de contraseña, revocación de tokens y límites contra intentos repetidos de inicio de sesión. Las migraciones cubren autenticación, assets, comentarios, commits y notificaciones. Todavía falta completar la recepción avanzada de algunos webhooks externos y ampliar las pruebas de integración remota. La subida y descarga binaria están disponibles para almacenamiento local, Firebase y S3.
+Mejoras posibles a futuro: verificación de correo, recuperación de contraseña y revocación de tokens. Lo demás ya está implementado: el límite de intentos de login, la subida y descarga de archivos (local, Firebase y S3), los webhooks de GitHub, comentarios, notificaciones y la administración del estudio.
+
+Las migraciones cubren todo el esquema. En una base vacía, `alembic upgrade head` crea todas las tablas de una vez (SQLite, MySQL o PostgreSQL); en una base existente solo agrega lo que falta. Al borrar una tarea, un proyecto o un estudio también se borran sus archivos del almacenamiento.
 
 Las bases SQLite locales (`*.db`) están excluidas de Git mediante `.gitignore`; cada entorno debe aplicar sus migraciones con `alembic upgrade head`. Los errores internos no controlados responden JSON 500 y conservan las cabeceras CORS configuradas por el backend.
 
@@ -302,4 +304,4 @@ Los archivos de cada asset se guardan con el tenant como prefijo (`tenants/<tena
 | `DELETE` | `/api/tenants/{tenant_id}/projects/{project_id}` | Borra el proyecto con sus tareas y builds |
 | `DELETE` | `/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}` | Borra una tarea |
 
-Las tablas nuevas se crean solas al arrancar la API. Los borrados dependen de `ON DELETE CASCADE`; en SQLite se activa con `PRAGMA foreign_keys=ON` en `app/database.py`.
+Las tablas `tenant_activity` y `login_throttles` se crean con la migración `20261112_06` (y también al arrancar la API si faltan). Los borrados dependen de `ON DELETE CASCADE`; en SQLite se activa con `PRAGMA foreign_keys=ON` en `app/database.py`.

@@ -12,7 +12,6 @@ const STATUS_FILL = {
   review: "#3fd0e8",
   done: "#b5f6ff",
 };
-const PENDING = ["backlog", "in_progress", "review"];
 
 const pct = (part, total) => (total ? Math.round((part / total) * 100) : 0);
 
