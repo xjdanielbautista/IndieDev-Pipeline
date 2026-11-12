@@ -1,6 +1,6 @@
 import hashlib
+import hashlib
 import hmac
-import json
 import logging
 import os
 import re
@@ -85,7 +85,6 @@ from .security import (
     verify_password,
 )
 from .storage import (
-    delete_stored_file,
     tenant_storage_key,
     firebase_download_url,
     format_file_size,
@@ -121,8 +120,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Permite al frontend distinguir una descarga directa de una URL firmada.
-    expose_headers=["Content-Disposition"],
 )
 
 logger = logging.getLogger("indiedev.backend")
@@ -275,29 +272,6 @@ def log_activity(db: Session, tenant_id: int, actor: User, action: str, summary:
             summary=summary[:300],
         )
     )
-
-
-def stored_files(db: Session, *conditions) -> list[tuple[str, str]]:
-    """(proveedor, ruta) de los assets que ya tienen archivo subido."""
-    rows = db.execute(
-        select(Asset.storage_provider, Asset.storage_key).where(
-            Asset.file_uploaded_at.is_not(None), *conditions
-        )
-    ).all()
-    return [(getattr(provider, "value", provider), key) for provider, key in rows]
-
-
-def remove_stored_files(files: list[tuple[str, str]]) -> None:
-    """Borra los archivos del almacenamiento después de borrar sus registros.
-
-    Si el proveedor falla, solo se registra el error: los datos ya se eliminaron
-    y no tiene sentido devolverle un error al usuario por un archivo huérfano.
-    """
-    for provider, storage_key in files:
-        try:
-            delete_stored_file(provider, storage_key)
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo borrar el archivo %s (%s)", storage_key, provider)
 
 
 def display_name(user: User | None) -> str:
@@ -1187,54 +1161,35 @@ async def github_webhook(project_id: int, request: Request, db: Session = Depend
     if event != "push":
         return Response(status_code=204)
 
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="El cuerpo del webhook no es JSON válido")
-    commits = payload.get("commits") if isinstance(payload, dict) else None
-    saved: set[tuple[int, str]] = set()
-    for commit in commits if isinstance(commits, list) else []:
-        if not isinstance(commit, dict):
-            continue
-        message = commit.get("message") or ""
-        sha = str(commit.get("id") or "")[:40]
-        if not sha:
-            continue
-        # Un mensaje puede mencionar la misma tarea varias veces ("#12 ... #12").
-        for asset_id in dict.fromkeys(int(number) for number in re.findall(r"#(\d+)", message)):
-            if (asset_id, sha) in saved:
-                continue
+    payload = await request.json()
+    for commit in payload.get("commits", []):
+        message = commit.get("message", "")
+        for asset_id_text in re.findall(r"#(\d+)", message):
             asset = db.scalar(select(Asset).where(
-                Asset.id == asset_id,
+                Asset.id == int(asset_id_text),
                 Asset.tenant_id == project.tenant_id,
                 Asset.project_id == project.id,
             ))
             if asset is None:
                 continue
-            # GitHub reintenta entregas; un commit ya guardado no se vuelve a insertar.
-            if db.scalar(select(AssetCommit.id).where(AssetCommit.asset_id == asset.id, AssetCommit.sha == sha)):
+            sha = commit.get("id", "")[:40]
+            if not sha or db.scalar(select(AssetCommit).where(AssetCommit.asset_id == asset.id, AssetCommit.sha == sha)):
                 continue
             timestamp_text = commit.get("timestamp")
             try:
                 committed_at = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
             except (AttributeError, ValueError):
                 committed_at = datetime.now(timezone.utc)
-            author = commit.get("author") if isinstance(commit.get("author"), dict) else {}
             db.add(AssetCommit(
                 tenant_id=project.tenant_id,
                 asset_id=asset.id,
                 sha=sha,
                 message=message,
-                author_name=str(author.get("name") or author.get("username") or "Desconocido")[:120],
-                url=str(commit.get("url") or "")[:500],
+                author_name=(commit.get("author") or {}).get("name", "Desconocido")[:120],
+                url=commit.get("url", "")[:500],
                 committed_at=committed_at,
             ))
-            saved.add((asset_id, sha))
-    try:
-        db.commit()
-    except IntegrityError:
-        # Dos entregas simultáneas del mismo push: la otra ya guardó los commits.
-        db.rollback()
+    db.commit()
     return Response(status_code=204)
 
 
@@ -1282,16 +1237,7 @@ def create_asset_comment(tenant_id: int, project_id: int, asset_id: int, payload
 @app.delete("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/comments/{comment_id}", status_code=204)
 def delete_asset_comment(tenant_id: int, project_id: int, asset_id: int, comment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     membership = require_tenant_membership(db, tenant_id, current_user.id)
-    comment = db.scalar(
-        select(AssetComment)
-        .join(Asset, Asset.id == AssetComment.asset_id)
-        .where(
-            AssetComment.id == comment_id,
-            AssetComment.tenant_id == tenant_id,
-            AssetComment.asset_id == asset_id,
-            Asset.project_id == project_id,
-        )
-    )
+    comment = db.scalar(select(AssetComment).where(AssetComment.id == comment_id, AssetComment.tenant_id == tenant_id, AssetComment.asset_id == asset_id))
     if comment is None:
         raise HTTPException(status_code=404, detail="Comentario no encontrado")
     if comment.user_id != current_user.id and not is_manager(membership):
@@ -1382,10 +1328,8 @@ def delete_tenant(
             status_code=400,
             detail="Para confirmar, escribe exactamente el identificador del estudio",
         )
-    files = stored_files(db, Asset.tenant_id == tenant_id)
     db.delete(tenant)
     db.commit()
-    remove_stored_files(files)
 
 
 @app.get("/api/tenants/{tenant_id}/activity", response_model=list[TenantActivityRead])
@@ -1444,14 +1388,12 @@ def delete_project(
     membership = require_tenant_membership(db, tenant_id, current_user.id)
     require_manager(membership, "eliminar proyectos")
     project = get_project(db, tenant_id, project_id)
-    files = stored_files(db, Asset.tenant_id == tenant_id, Asset.project_id == project_id)
     log_activity(
         db, tenant_id, current_user, "project_deleted",
         f"Eliminó el proyecto \"{project.name}\" con todas sus tareas y builds",
     )
     db.delete(project)
     db.commit()
-    remove_stored_files(files)
 
 
 @app.delete(
@@ -1475,8 +1417,6 @@ def delete_asset(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
-    files = stored_files(db, Asset.id == asset.id)
     log_activity(db, tenant_id, current_user, "asset_deleted", f"Eliminó la tarea \"{asset.original_name}\"")
     db.delete(asset)
     db.commit()
-    remove_stored_files(files)

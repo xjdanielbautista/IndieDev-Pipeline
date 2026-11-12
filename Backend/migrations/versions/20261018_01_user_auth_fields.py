@@ -20,12 +20,7 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
     if "users" not in inspector.get_table_names():
-        # Base nueva (vacía): se crea el esquema actual completo de una vez. Las
-        # migraciones siguientes revisan qué falta, así que no repiten nada. Esto
-        # permite que `alembic upgrade head` funcione solo en SQLite, MySQL y PostgreSQL.
-        from app.models import Base
-
-        Base.metadata.create_all(bind=bind)
+        # On a new local database, create_all() creates the complete current schema.
         return
 
     columns = {column["name"] for column in inspector.get_columns("users")}
