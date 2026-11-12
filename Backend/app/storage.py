@@ -48,7 +48,7 @@ def save_local(storage_key: str, file: BinaryIO) -> None:
             output.write(chunk)
 
 
-def local_file(storage_key: str) -> Path:
+def local_file(storage_key: str) -> Path | None:
     destination = safe_storage_path(storage_key)
     if not destination.is_file():
         return None
@@ -127,10 +127,35 @@ def save_firebase(storage_key: str, file: BinaryIO, content_type: str | None) ->
     blob.upload_from_file(file, content_type=content_type)
 
 
-def firebase_download_url(storage_key: str) -> dict:
+def firebase_download_url(storage_key: str) -> dict | None:
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
     blob = _firebase_bucket().blob(storage_key)
     if not blob.exists():
         return None
     url = blob.generate_signed_url(expiration=timedelta(minutes=10), method="GET", version="v4")
     return {"url": url, "expires_at": expires_at.isoformat()}
+
+
+def delete_stored_file(provider: str, storage_key: str) -> None:
+    """Borra el archivo de un asset en su proveedor. No falla si ya no existe."""
+    if provider == "local":
+        path = safe_storage_path(storage_key)
+        if path.is_file():
+            path.unlink()
+        root = Path(os.getenv("LOCAL_UPLOAD_DIR", "./uploads")).resolve()
+        # Quita las carpetas que quedaron vacías, sin salir del directorio de subidas.
+        parent = path.parent
+        while parent != root and root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    elif provider == "s3":
+        bucket = os.getenv("S3_BUCKET")
+        if bucket:
+            _s3_client().delete_object(Bucket=bucket, Key=storage_key)
+    elif provider == "firebase":
+        blob = _firebase_bucket().blob(storage_key)
+        if blob.exists():
+            blob.delete()
