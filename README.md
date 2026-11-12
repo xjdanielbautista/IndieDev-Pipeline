@@ -130,6 +130,8 @@ Se definen como variables de entorno (ejemplo en `Backend/.env.example`; el deta
 | `MAX_UPLOAD_MB` | Tamaño máximo por archivo (200 por defecto) |
 | `PUBLIC_BACKEND_URL` | URL pública del backend para armar la URL del webhook de GitHub (opcional) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Duración de la sesión (30 por defecto) |
+| `FRONTEND_URL` | URL del frontend para el enlace de recuperación de contraseña (por defecto, el primer origen de `FRONTEND_ORIGINS`) |
+| `EMAIL_PROVIDER` | Cómo se envían los correos: `console` (solo log, por defecto), `smtp` o `brevo`. Ver `Backend/README.md` |
 
 ### Frontend (`Frontend/.env`)
 
@@ -146,7 +148,7 @@ Se crea copiando `Frontend/.env.example`:
 
 ## ✅ Funcionalidades
 
-- **Cuentas y sesión:** registro, inicio de sesión con token JWT y bloqueo temporal tras 5 intentos fallidos.
+- **Cuentas y sesión:** registro, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos y recuperación de contraseña por correo.
 - **Multi-tenant:** cada estudio tiene sus integrantes, proyectos y archivos aislados; un usuario puede pertenecer a varios estudios.
 - **Roles:** dueño, admin, developer, artista y tester, con permisos validados en el backend.
 - **Tablero Kanban:** tareas de código y arte con asignación abierta o restringida, historial de cambios y restauración.

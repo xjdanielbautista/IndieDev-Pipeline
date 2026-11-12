@@ -8,7 +8,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
@@ -30,6 +30,7 @@ from .models import (
     LoginThrottle,
     Membership,
     Notification,
+    PasswordResetToken,
     Project,
     StorageProvider,
     Task,
@@ -55,6 +56,8 @@ from .schemas import (
     MemberRoleUpdate,
     NotificationRead,
     NotificationReadUpdate,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -84,6 +87,7 @@ from .security import (
     validate_secret_key,
     verify_password,
 )
+from .mailer import send_email
 from .storage import (
     delete_stored_file,
     tenant_storage_key,
@@ -378,6 +382,97 @@ def login_for_access_token(
 @app.get("/api/auth/me", response_model=UserRead)
 def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+# ---------- Recuperación de contraseña ----------
+PASSWORD_RESET_MINUTES = int(os.getenv("PASSWORD_RESET_MINUTES", "30"))
+MAX_RESET_REQUESTS = 3  # por usuario cada 15 minutos
+RESET_REQUESTED_MESSAGE = (
+    "Si el correo está registrado, te enviamos un enlace para restablecer tu contraseña."
+)
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def frontend_url() -> str:
+    return os.getenv("FRONTEND_URL", allowed_origins[0] if allowed_origins else "").rstrip("/")
+
+
+@app.post("/api/auth/password-reset/request", status_code=status.HTTP_202_ACCEPTED)
+def request_password_reset(
+    payload: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Envía un enlace de recuperación. Responde lo mismo exista o no el correo."""
+    now = utcnow()
+    email = payload.email.strip().lower()
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
+    if user is not None:
+        # Limpieza de enlaces viejos para que la tabla no crezca sin límite.
+        db.execute(delete(PasswordResetToken).where(PasswordResetToken.expires_at < now - timedelta(days=1)))
+        recent = db.scalar(
+            select(func.count(PasswordResetToken.id)).where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.created_at > now - timedelta(minutes=15),
+            )
+        )
+        if recent < MAX_RESET_REQUESTS:
+            # Solo el enlace más reciente sirve.
+            for previous in db.scalars(
+                select(PasswordResetToken).where(
+                    PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)
+                )
+            ).all():
+                previous.used_at = now
+            token = secrets.token_urlsafe(32)
+            db.add(PasswordResetToken(
+                user_id=user.id,
+                token_hash=hash_reset_token(token),
+                created_at=now,
+                expires_at=now + timedelta(minutes=PASSWORD_RESET_MINUTES),
+            ))
+            db.commit()
+            link = f"{frontend_url()}/?reset_token={token}"
+            background_tasks.add_task(
+                send_email,
+                user.email,
+                "Restablece tu contraseña de IndieDev Pipeline",
+                f"Hola {display_name(user)}:\n\n"
+                f"Recibimos una solicitud para restablecer tu contraseña. Abre este enlace "
+                f"(vence en {PASSWORD_RESET_MINUTES} minutos y solo se puede usar una vez):\n\n"
+                f"{link}\n\n"
+                "Si no lo pediste, ignora este correo: tu contraseña no cambiará.",
+            )
+        else:
+            db.commit()
+    return {"detail": RESET_REQUESTED_MESSAGE}
+
+
+@app.post("/api/auth/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
+    now = utcnow()
+    reset = db.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_reset_token(payload.token))
+    )
+    if reset is None or reset.used_at is not None or reset.expires_at <= now:
+        raise HTTPException(
+            status_code=400,
+            detail="El enlace no es válido o ya expiró. Solicita uno nuevo.",
+        )
+    user = db.get(User, reset.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="El enlace no es válido o ya expiró. Solicita uno nuevo.")
+    user.password_hash = hash_password(payload.new_password)
+    user.password_changed_at = now
+    reset.used_at = now
+    # Quien recupera su cuenta no debe seguir bloqueado por intentos fallidos.
+    identifiers = [value.lower() for value in (user.username, user.email) if value]
+    db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/api/tenants", response_model=TenantRead, status_code=status.HTTP_201_CREATED)

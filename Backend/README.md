@@ -269,7 +269,7 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 
 ## Pendiente
 
-Mejoras posibles a futuro: verificación de correo, recuperación de contraseña y revocación de tokens. Lo demás ya está implementado: el límite de intentos de login, la subida y descarga de archivos (local, Firebase y S3), los webhooks de GitHub, comentarios, notificaciones y la administración del estudio.
+Mejoras posibles a futuro: verificación de correo y revocación individual de sesiones. Lo demás ya está implementado: la recuperación de contraseña, el límite de intentos de login, la subida y descarga de archivos (local, Firebase y S3), los webhooks de GitHub, comentarios, notificaciones y la administración del estudio.
 
 Las migraciones cubren todo el esquema. En una base vacía, `alembic upgrade head` crea todas las tablas de una vez (SQLite, MySQL o PostgreSQL); en una base existente solo agrega lo que falta. Al borrar una tarea, un proyecto o un estudio también se borran sus archivos del almacenamiento.
 
@@ -305,3 +305,20 @@ Los archivos de cada asset se guardan con el tenant como prefijo (`tenants/<tena
 | `DELETE` | `/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}` | Borra una tarea |
 
 Las tablas `tenant_activity` y `login_throttles` se crean con la migración `20261112_06` (y también al arrancar la API si faltan). Los borrados dependen de `ON DELETE CASCADE`; en SQLite se activa con `PRAGMA foreign_keys=ON` en `app/database.py`.
+
+## Recuperación de contraseña
+
+1. `POST /api/auth/password-reset/request` con `{ "email": "..." }`. Responde siempre `202` con el mismo mensaje, exista o no el correo, para no revelar qué cuentas hay. Si existe, envía un enlace `FRONTEND_URL/?reset_token=...`.
+2. `POST /api/auth/password-reset/confirm` con `{ "token": "...", "new_password": "..." }`. Responde `204`, o `400` si el enlace no es válido, ya se usó o expiró.
+
+Reglas: el enlace vence en `PASSWORD_RESET_MINUTES` (30 por defecto) y sirve una sola vez. Pedir uno nuevo invalida el anterior, y se permiten 3 solicitudes por cuenta cada 15 minutos. En la base solo se guarda el SHA-256 del token (tabla `password_reset_tokens`, migración `20261112_07`). Al cambiar la contraseña se cierran todas las sesiones abiertas (columna `users.password_changed_at`) y se quita el bloqueo por intentos fallidos.
+
+El correo se envía según `EMAIL_PROVIDER`:
+
+| Valor | Variables | Nota |
+| --- | --- | --- |
+| `console` (por defecto) | — | No envía nada; el enlace aparece en el log del backend. Para desarrollo. |
+| `smtp` | `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | Con Gmail: `smtp.gmail.com` y una *contraseña de aplicación* (requiere verificación en dos pasos). |
+| `brevo` | `BREVO_API_KEY`, `EMAIL_FROM` | API HTTP de Brevo (plan gratuito: 300 correos al día). `EMAIL_FROM` debe ser un remitente verificado en Brevo. |
+
+En Render conviene `brevo`: los servicios gratuitos de Render bloquean las conexiones SMTP salientes. En Render define también `FRONTEND_URL` con la URL de Vercel.

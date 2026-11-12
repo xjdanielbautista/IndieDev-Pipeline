@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import LoginScreen from "./components/LoginScreen";
+import { getResetTokenFromUrl } from "./utils/resetToken";
 import Workspace from "./components/Workspace";
 import { ToastProvider } from "./components/ui";
 import { AUTH_EXPIRED_EVENT, getToken, getTokenExpiration, isTokenValid } from "./api/client";
@@ -8,7 +9,10 @@ import { getCurrentUser, logout } from "./api/auth";
 const EXPIRED_MESSAGE = "Tu sesión expiró. Vuelve a iniciar sesión.";
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(() => isTokenValid(getToken()));
+  const [isLoggedIn, setIsLoggedIn] = useState(
+    // Un enlace de recuperación siempre abre la pantalla de nueva contraseña.
+    () => isTokenValid(getToken()) && !getResetTokenFromUrl(),
+  );
   const [currentUser, setCurrentUser] = useState(null);
   const [authNotice, setAuthNotice] = useState("");
   const [loadError, setLoadError] = useState("");
