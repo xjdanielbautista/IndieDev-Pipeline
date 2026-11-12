@@ -222,3 +222,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .env
+
+# Archivos subidos con ASSET_STORAGE_PROVIDER=local
+Backend/uploads/
+uploads/

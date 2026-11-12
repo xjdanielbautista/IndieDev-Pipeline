@@ -23,19 +23,19 @@ El proyecto está diseñado bajo un modelo **SaaS Multi-Tenant** que garantiza e
                   ENTORNO DE PRODUCCIÓN (PROD)
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
-│  [ Vercel ]  ──────────>  [ Render ]  ──────────> [ Aiven ]  │
-│  (Frontend)  Peticiones    (Backend)   Consultas    (MySQL)  │
-│               HTTPS                     SQL                  │
-│                                                              │
-│                   └─────> [ Firebase ]                       │
-│                           (Assets 3D / Builds)               │
+│  [ Vercel ]  ──────────>  [ Render ]  ──────────> [ SQL ]    │
+│  (Frontend)  Peticiones    (Backend)   Consultas  PostgreSQL │
+│               HTTPS            │                  o MySQL    │
+│                                │                             │
+│                                └─────> [ Supabase S3 ]       │
+│                                        o Firebase (archivos) │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 * **Frontend:** React con Vite y Tailwind CSS, desplegado en Vercel.
 * **Backend:** API REST con Python (FastAPI), desplegada en Render.
-* **Base de Datos:** MySQL gestionado en la nube vía Aiven. En local, el backend usa SQLite si no se define `DATABASE_URL`.
-* **Almacenamiento de Archivos:** Bucket desacoplado en Firebase / Amazon S3.
+* **Base de Datos:** PostgreSQL o MySQL en la nube (la URL se configura con `DATABASE_URL`). En local, el backend usa SQLite si no se define `DATABASE_URL`.
+* **Almacenamiento de Archivos:** Bucket desacoplado compatible con S3 (Supabase Storage o Amazon S3) o Firebase Storage. En local, una carpeta del disco.
 
 ---
 
@@ -80,12 +80,25 @@ cd Backend
 python3 -m venv .venv
 source .venv/bin/activate        # En Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+export SECRET_KEY="$(openssl rand -hex 32)"   # obligatorio: firma los tokens de sesión
+export ASSET_STORAGE_PROVIDER=local           # guarda los archivos en Backend/uploads
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+> En Windows (PowerShell) usa `$env:SECRET_KEY = "<64 caracteres aleatorios>"` y `$env:ASSET_STORAGE_PROVIDER = "local"`. También puedes guardar las variables en `Backend/.env.local` y cargarlas con `source ./load-env.sh` (ver `Backend/README.md`).
+
 El backend queda en `http://localhost:8000`. La documentación interactiva de la API está en `http://localhost:8000/docs` y la ruta de prueba en `http://localhost:8000/health`.
 
-Sin `DATABASE_URL`, el backend usa SQLite, así que **no necesitas instalar MySQL** para probar. Para conectar MySQL, ver `Backend/README.md`.
+Sin `DATABASE_URL`, el backend usa SQLite, así que **no necesitas instalar ninguna base de datos** para probar. Para conectar PostgreSQL o MySQL, ver `Backend/README.md`.
+
+Para tener datos de ejemplo (2 estudios, integrantes de cada rol, tareas y un build), con el backend corriendo:
+
+```bash
+python scripts/seed_demo.py
+```
+
+Usuarios: `dueno_pixel`, `dev_pixel`, `artista_pixel`, `tester_pixel` (y los de `nebula`). Contraseña de todos: `Demo12345`.
 
 ### 3. Levantar el Frontend (React)
 
@@ -110,8 +123,13 @@ Se definen como variables de entorno (ejemplo en `Backend/.env.example`; el deta
 
 | Variable | Para qué sirve |
 |---|---|
-| `DATABASE_URL` | Conexión a la base de datos. Si no se define, usa SQLite local |
-| `FRONTEND_ORIGINS` | Orígenes del frontend permitidos por CORS. Por defecto `http://localhost:5173` |
+| `SECRET_KEY` | **Obligatoria.** Firma los tokens JWT; mínimo 32 caracteres aleatorios |
+| `DATABASE_URL` | Conexión a la base de datos (`postgresql://...`, `mysql+pymysql://...`). Si no se define, usa SQLite local |
+| `FRONTEND_ORIGINS` | Orígenes del frontend permitidos por CORS, separados por comas. Por defecto `http://localhost:5173` |
+| `ASSET_STORAGE_PROVIDER` | Dónde se guardan los archivos: `local`, `s3` (Supabase/AWS) o `firebase` |
+| `MAX_UPLOAD_MB` | Tamaño máximo por archivo (200 por defecto) |
+| `PUBLIC_BACKEND_URL` | URL pública del backend para armar la URL del webhook de GitHub (opcional) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Duración de la sesión (30 por defecto) |
 
 ### Frontend (`Frontend/.env`)
 
@@ -121,57 +139,51 @@ Se crea copiando `Frontend/.env.example`:
 |---|---|
 | `VITE_API_BASE_URL` | URL del backend. En local: `http://localhost:8000` |
 | `VITE_ENVIRONMENT` | Entorno de ejecución (`development` en local) |
-| `VITE_TENANT_ID` | ID del estudio (tenant) con el que se hacen las pruebas; debe existir en el backend |
-| `VITE_TENANT_HEADER_NAME` | Nombre del encabezado HTTP para enviar el tenant (`X-Tenant-ID`) |
-| `VITE_USER_ID` | ID del usuario de prueba (para bloquear y liberar assets) |
-| `VITE_ASSET_ID` | ID de un asset de prueba; debe existir en el backend |
 
 > ⚠️ Nunca subas archivos `.env` al repositorio. Solo se versionan los `.env.example`.
 
 ---
 
-## 🎨 Frontend: conexión con el backend local
+## ✅ Funcionalidades
 
-### Cómo funciona la conexión
+- **Cuentas y sesión:** registro, inicio de sesión con token JWT y bloqueo temporal tras 5 intentos fallidos.
+- **Multi-tenant:** cada estudio tiene sus integrantes, proyectos y archivos aislados; un usuario puede pertenecer a varios estudios.
+- **Roles:** dueño, admin, developer, artista y tester, con permisos validados en el backend.
+- **Tablero Kanban:** tareas de código y arte con asignación abierta o restringida, historial de cambios y restauración.
+- **Bloqueo y versiones de archivos:** solo quien bloquea un archivo puede subir una nueva versión; descarga con URL firmada.
+- **GitHub:** los commits con `#<id>` en el mensaje aparecen en la tarea (webhook firmado con HMAC).
+- **Comentarios y notificaciones:** avisos al asignar, comentar, pasar a revisión o liberar un bloqueo.
+- **Resumen, Asset Vault y Build History:** avance del proyecto, carga por integrante y registro de builds.
+- **Administración:** editar o eliminar estudio, proyectos y tareas, y bitácora de actividad.
+- **Versión para celular.**
 
-- La URL del backend se lee de `VITE_API_BASE_URL` en `Frontend/src/config/api.js`. Usa `API_BASE_URL` desde ahí en lugar de escribir URLs a mano.
-- Si cambias el `.env`, detén `npm run dev` (Ctrl + C) y vuelve a correrlo. Vite solo lee las variables al arrancar.
-- El indicador **"Conectado: indie-dev-pipeline-api"** del login y del header (componente `ApiStatus`) comprueba la ruta `/health` del backend.
+---
 
-### Qué está conectado hoy
+## 🧪 Pruebas
 
-- El login es una simulación: cualquier correo y contraseña entra.
-- El tablero Kanban usa datos de ejemplo definidos en `Frontend/src/App.jsx`.
-- **Lo único conectado al backend** es el botón de candado de la tarea `ART-105` (bloquear y liberar un asset). Usa `VITE_TENANT_ID`, `VITE_ASSET_ID` y `VITE_USER_ID`.
-
-### Datos de prueba para el candado
-
-Con el backend corriendo y la base vacía (SQLite):
-
-1. Crea el estudio y su usuario propietario. Con base vacía quedan con id 1:
 ```bash
-   curl -X POST http://localhost:8000/api/tenants \
-     -H "Content-Type: application/json" \
-     -d '{"name":"Estudio Demo","slug":"estudio-demo","owner_email":"demo@ejemplo.com"}'
+cd Backend
+pip install -r requirements-dev.txt
+pytest
 ```
-2. Crea un proyecto y un asset de prueba desde `http://localhost:8000/docs`, con "Try it out" en `POST /api/tenants/1/projects` y luego en `POST /api/tenants/1/projects/1/assets`. Swagger llena un ejemplo con los campos exactos.
-3. Deja el asset bloqueado, para que coincida con cómo aparece `ART-105` en pantalla:
-```bash
-   curl -X PATCH http://localhost:8000/api/tenants/1/assets/1/lock \
-     -H "Content-Type: application/json" \
-     -d '{"user_id":1}'
-```
-4. En `http://localhost:5173`, inicia sesión y presiona el candado de `ART-105`. Debe liberarse sin alert de error; si lo presionas de nuevo, se vuelve a bloquear.
 
-### Problemas comunes
+```bash
+cd Frontend
+npm run lint
+npm run build
+```
+
+---
+
+## 🛟 Problemas comunes
 
 | Problema | Solución |
 |---|---|
-| "Sin conexión con el backend" | El backend no está corriendo o usa otro puerto |
-| Error de CORS en la consola del navegador | Si el frontend corre en otro puerto, define `FRONTEND_ORIGINS` en el backend con ese origen exacto |
+| El backend no arranca: `SECRET_KEY must be set...` | Define `SECRET_KEY` con `openssl rand -hex 32` antes de `uvicorn` |
+| "No se pudo conectar con el backend" | El backend no está corriendo, usa otro puerto o (en Render) está despertando; espera unos segundos y reintenta |
+| Error de CORS en la consola del navegador | Agrega el origen exacto del frontend a `FRONTEND_ORIGINS` (sin `/` al final) |
 | `VITE_API_BASE_URL` sale `undefined` | Debe empezar con `VITE_` y hay que reiniciar `npm run dev` |
-| "Asset no encontrado" al usar el candado | El asset con ese id no existe; revisa los datos de prueba |
-| "Solo quien bloqueó el asset puede liberarlo" | El asset no está bloqueado en el backend; haz el paso 3 de los datos de prueba |
+| "No se pudo guardar el archivo" | Revisa `ASSET_STORAGE_PROVIDER` y sus credenciales; para probar en local usa `local` |
 | Puerto 5173 ocupado | Vite usa el siguiente (5174); agrégalo a `FRONTEND_ORIGINS` |
 
 ---
@@ -179,4 +191,4 @@ Con el backend corriendo y la base vacía (SQLite):
 ## ☁️ Producción
 
 - **Frontend (Vercel):** https://indiedev-pipeline-frontend.vercel.app. En Vercel, `VITE_API_BASE_URL` apunta a la URL pública del backend en Render, y hay que volver a desplegar si cambia.
-- **Backend (Render):** `Backend` como Root Directory, comando de inicio `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, con `DATABASE_URL` y `FRONTEND_ORIGINS` configuradas. Detalle en `Backend/README.md`.
+- **Backend (Render):** `Backend` como Root Directory, comando de compilación `pip install -r requirements.txt && alembic upgrade head`, comando de inicio `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, con `SECRET_KEY`, `DATABASE_URL`, `FRONTEND_ORIGINS` y las variables del almacenamiento configuradas. La URL `postgres://...` que entrega Render funciona tal cual. Detalle en `Backend/README.md`.
