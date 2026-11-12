@@ -65,8 +65,8 @@ export default function TeamPanel({ tenant, members, assets, currentUser, onMemb
   };
 
   return (
-    <div className="max-w-4xl mx-auto grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
-      <section className="min-w-0">
+    <div className="max-w-4xl mx-auto grid gap-6 lg:grid-cols-[1fr_300px]">
+      <section>
         <h2 className="text-lg font-semibold text-white">Equipo de {tenant.name}</h2>
         <p className="text-xs text-gray-500 mb-4">
           {isManager(myRole)
@@ -96,7 +96,7 @@ export default function TeamPanel({ tenant, members, assets, currentUser, onMemb
                     value={m.role}
                     disabled={busyId === m.id}
                     onChange={(e) => changeRole(m, e.target.value)}
-                    className="shrink-0 bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-md px-2 py-1.5 focus:outline-none focus:border-[#00F0FF]"
+                    className="bg-[#0B0D14] border border-[#272B3B] text-white text-sm rounded-md px-2 py-1.5 focus:outline-none focus:border-[#00F0FF]"
                   >
                     {[...new Set([m.role, ...roles])].map((r) => (
                       <option key={r} value={r}>
@@ -105,7 +105,7 @@ export default function TeamPanel({ tenant, members, assets, currentUser, onMemb
                     ))}
                   </select>
                 ) : (
-                  <span className="shrink-0 text-[11px] font-mono uppercase px-2 py-1 rounded border border-[#272B3B] text-gray-400">
+                  <span className="text-[11px] font-mono uppercase px-2 py-1 rounded border border-[#272B3B] text-gray-400">
                     {ROLE_INFO[m.role]?.label ?? m.role}
                   </span>
                 )}
@@ -114,7 +114,7 @@ export default function TeamPanel({ tenant, members, assets, currentUser, onMemb
                     onClick={() => remove(m)}
                     disabled={busyId === m.id}
                     title={`Quitar a ${m.username}`}
-                    className="shrink-0 p-2 text-gray-500 hover:text-[#FF3D00] hover:bg-[#FF3D00]/10 rounded"
+                    className="p-2 text-gray-500 hover:text-[#FF3D00] hover:bg-[#FF3D00]/10 rounded"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>

@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../config/api";
-import { AUTH_EXPIRED_EVENT, ApiError, apiFetch, clearToken, getToken, isTokenValid } from "./client";
+import { ApiError, apiFetch, getToken } from "./client";
 
 // Llamadas al backend para estudios, proyectos, tareas (assets) y builds.
 // Todas usan el token de la sesión mediante apiFetch.
@@ -95,11 +95,6 @@ export function uploadAssetFile(tenantId, projectId, assetId, file) {
 // Descarga: con Firebase/S3 el backend responde { url }; con el proveedor local, el archivo directo.
 export async function downloadAssetFile(tenantId, projectId, assetId, fileName) {
   const token = getToken();
-  if (!isTokenValid(token)) {
-    clearToken();
-    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-    throw new ApiError("Tu sesión expiró, vuelve a iniciar sesión", 401);
-  }
   let response;
   try {
     response = await fetch(`${API_BASE_URL}${assetPath(tenantId, projectId, assetId)}/file`, {
@@ -109,35 +104,20 @@ export async function downloadAssetFile(tenantId, projectId, assetId, fileName) 
     throw new ApiError("No se pudo conectar con el backend", 0);
   }
   if (!response.ok) {
-    if (response.status === 401) {
-      clearToken();
-      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-    }
     const data = await response.json().catch(() => null);
     throw new ApiError(data?.detail || `Error ${response.status}`, response.status);
   }
-  // Con Firebase/S3 el backend responde JSON { url, expires_at }. Con el proveedor local
-  // responde el archivo tal cual, que también puede ser un .json: por eso se revisa el
-  // contenido y no solo el content-type.
-  const blob = await response.blob();
   if ((response.headers.get("content-type") || "").includes("application/json")) {
-    const signed = await blob
-      .text()
-      .then((text) => JSON.parse(text))
-      .catch(() => null);
-    if (signed && typeof signed.url === "string" && "expires_at" in signed && !response.headers.get("content-disposition")) {
-      window.open(signed.url, "_blank", "noopener");
-      return;
-    }
+    const { url } = await response.json();
+    window.open(url, "_blank", "noopener");
+    return;
   }
+  const blob = await response.blob();
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = fileName;
-  document.body.appendChild(link);
   link.click();
-  link.remove();
-  // Firefox cancela la descarga si la URL se revoca en el mismo instante.
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  URL.revokeObjectURL(link.href);
 }
 
 // Notificaciones
