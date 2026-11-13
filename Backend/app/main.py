@@ -1,6 +1,6 @@
 import hashlib
-import hashlib
 import hmac
+import json
 import logging
 import os
 import re
@@ -8,7 +8,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
@@ -30,6 +30,7 @@ from .models import (
     LoginThrottle,
     Membership,
     Notification,
+    PasswordResetToken,
     Project,
     StorageProvider,
     Task,
@@ -55,6 +56,8 @@ from .schemas import (
     MemberRoleUpdate,
     NotificationRead,
     NotificationReadUpdate,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -84,7 +87,9 @@ from .security import (
     validate_secret_key,
     verify_password,
 )
+from .mailer import send_email
 from .storage import (
+    delete_stored_file,
     tenant_storage_key,
     firebase_download_url,
     format_file_size,
@@ -120,6 +125,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Permite al frontend distinguir una descarga directa de una URL firmada.
+    expose_headers=["Content-Disposition"],
 )
 
 logger = logging.getLogger("indiedev.backend")
@@ -274,6 +281,29 @@ def log_activity(db: Session, tenant_id: int, actor: User, action: str, summary:
     )
 
 
+def stored_files(db: Session, *conditions) -> list[tuple[str, str]]:
+    """(proveedor, ruta) de los assets que ya tienen archivo subido."""
+    rows = db.execute(
+        select(Asset.storage_provider, Asset.storage_key).where(
+            Asset.file_uploaded_at.is_not(None), *conditions
+        )
+    ).all()
+    return [(getattr(provider, "value", provider), key) for provider, key in rows]
+
+
+def remove_stored_files(files: list[tuple[str, str]]) -> None:
+    """Borra los archivos del almacenamiento después de borrar sus registros.
+
+    Si el proveedor falla, solo se registra el error: los datos ya se eliminaron
+    y no tiene sentido devolverle un error al usuario por un archivo huérfano.
+    """
+    for provider, storage_key in files:
+        try:
+            delete_stored_file(provider, storage_key)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo borrar el archivo %s (%s)", storage_key, provider)
+
+
 def display_name(user: User | None) -> str:
     if user is None:
         return "usuario eliminado"
@@ -352,6 +382,97 @@ def login_for_access_token(
 @app.get("/api/auth/me", response_model=UserRead)
 def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+# ---------- Recuperación de contraseña ----------
+PASSWORD_RESET_MINUTES = int(os.getenv("PASSWORD_RESET_MINUTES", "30"))
+MAX_RESET_REQUESTS = 3  # por usuario cada 15 minutos
+RESET_REQUESTED_MESSAGE = (
+    "Si el correo está registrado, te enviamos un enlace para restablecer tu contraseña."
+)
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def frontend_url() -> str:
+    return os.getenv("FRONTEND_URL", allowed_origins[0] if allowed_origins else "").rstrip("/")
+
+
+@app.post("/api/auth/password-reset/request", status_code=status.HTTP_202_ACCEPTED)
+def request_password_reset(
+    payload: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Envía un enlace de recuperación. Responde lo mismo exista o no el correo."""
+    now = utcnow()
+    email = payload.email.strip().lower()
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
+    if user is not None:
+        # Limpieza de enlaces viejos para que la tabla no crezca sin límite.
+        db.execute(delete(PasswordResetToken).where(PasswordResetToken.expires_at < now - timedelta(days=1)))
+        recent = db.scalar(
+            select(func.count(PasswordResetToken.id)).where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.created_at > now - timedelta(minutes=15),
+            )
+        )
+        if recent < MAX_RESET_REQUESTS:
+            # Solo el enlace más reciente sirve.
+            for previous in db.scalars(
+                select(PasswordResetToken).where(
+                    PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)
+                )
+            ).all():
+                previous.used_at = now
+            token = secrets.token_urlsafe(32)
+            db.add(PasswordResetToken(
+                user_id=user.id,
+                token_hash=hash_reset_token(token),
+                created_at=now,
+                expires_at=now + timedelta(minutes=PASSWORD_RESET_MINUTES),
+            ))
+            db.commit()
+            link = f"{frontend_url()}/?reset_token={token}"
+            background_tasks.add_task(
+                send_email,
+                user.email,
+                "Restablece tu contraseña de IndieDev Pipeline",
+                f"Hola {display_name(user)}:\n\n"
+                f"Recibimos una solicitud para restablecer tu contraseña. Abre este enlace "
+                f"(vence en {PASSWORD_RESET_MINUTES} minutos y solo se puede usar una vez):\n\n"
+                f"{link}\n\n"
+                "Si no lo pediste, ignora este correo: tu contraseña no cambiará.",
+            )
+        else:
+            db.commit()
+    return {"detail": RESET_REQUESTED_MESSAGE}
+
+
+@app.post("/api/auth/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
+    now = utcnow()
+    reset = db.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_reset_token(payload.token))
+    )
+    if reset is None or reset.used_at is not None or reset.expires_at <= now:
+        raise HTTPException(
+            status_code=400,
+            detail="El enlace no es válido o ya expiró. Solicita uno nuevo.",
+        )
+    user = db.get(User, reset.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="El enlace no es válido o ya expiró. Solicita uno nuevo.")
+    user.password_hash = hash_password(payload.new_password)
+    user.password_changed_at = now
+    reset.used_at = now
+    # Quien recupera su cuenta no debe seguir bloqueado por intentos fallidos.
+    identifiers = [value.lower() for value in (user.username, user.email) if value]
+    db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/api/tenants", response_model=TenantRead, status_code=status.HTTP_201_CREATED)
@@ -774,6 +895,7 @@ def update_asset(
         raise HTTPException(status_code=404, detail="Asset no encontrado")
 
     changes = payload.model_dump(exclude_unset=True)
+    previous_status = asset.status
     if any(field in changes for field in ("category", "assignment_mode", "assigned_user_ids")):
         require_manager(membership, "cambiar el tipo o los asignados de una tarea")
     if "status" in changes and changes["status"] is not None:
@@ -846,23 +968,23 @@ def update_asset(
     if asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value and not asset.assigned_user_ids:
         raise HTTPException(status_code=422, detail="El modo restringido requiere al menos un integrante asignado")
 
-    if "status" in changes and changes["status"] is not None:
-        new_status = changes["status"] if isinstance(changes["status"], str) else changes["status"].value
-        if new_status == AssetStatus.REVIEW.value:
-            tester_memberships = db.scalars(
-                select(Membership).where(Membership.tenant_id == tenant_id, Membership.role == MemberRole.TESTER)
-            ).all()
-            for tester_membership in tester_memberships:
-                add_notification(
-                    db,
-                    tester_membership.user_id,
-                    current_user.id,
-                    tenant_id,
-                    project_id,
-                    asset.id,
-                    "review",
-                    f"\"{asset.original_name}\" está listo para revisión",
-                )
+    # Solo avisa a los testers cuando la tarea realmente entra a revisión
+    # (no si ya estaba en "review" y se reenvía el mismo estado).
+    if asset.status != previous_status and asset.status == AssetStatus.REVIEW.value:
+        tester_memberships = db.scalars(
+            select(Membership).where(Membership.tenant_id == tenant_id, Membership.role == MemberRole.TESTER)
+        ).all()
+        for tester_membership in tester_memberships:
+            add_notification(
+                db,
+                tester_membership.user_id,
+                current_user.id,
+                tenant_id,
+                project_id,
+                asset.id,
+                "review",
+                f"\"{asset.original_name}\" está listo para revisión",
+            )
 
     db.commit()
     db.refresh(asset)
@@ -995,7 +1117,7 @@ def unlock_asset(
     "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file",
     response_model=AssetRead,
 )
-async def upload_asset_file(
+def upload_asset_file(  # sin async: la subida a S3/Firebase es bloqueante y así corre en un hilo aparte
     tenant_id: int,
     project_id: int,
     asset_id: int,
@@ -1161,35 +1283,54 @@ async def github_webhook(project_id: int, request: Request, db: Session = Depend
     if event != "push":
         return Response(status_code=204)
 
-    payload = await request.json()
-    for commit in payload.get("commits", []):
-        message = commit.get("message", "")
-        for asset_id_text in re.findall(r"#(\d+)", message):
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="El cuerpo del webhook no es JSON válido")
+    commits = payload.get("commits") if isinstance(payload, dict) else None
+    saved: set[tuple[int, str]] = set()
+    for commit in commits if isinstance(commits, list) else []:
+        if not isinstance(commit, dict):
+            continue
+        message = commit.get("message") or ""
+        sha = str(commit.get("id") or "")[:40]
+        if not sha:
+            continue
+        # Un mensaje puede mencionar la misma tarea varias veces ("#12 ... #12").
+        for asset_id in dict.fromkeys(int(number) for number in re.findall(r"#(\d+)", message)):
+            if (asset_id, sha) in saved:
+                continue
             asset = db.scalar(select(Asset).where(
-                Asset.id == int(asset_id_text),
+                Asset.id == asset_id,
                 Asset.tenant_id == project.tenant_id,
                 Asset.project_id == project.id,
             ))
             if asset is None:
                 continue
-            sha = commit.get("id", "")[:40]
-            if not sha or db.scalar(select(AssetCommit).where(AssetCommit.asset_id == asset.id, AssetCommit.sha == sha)):
+            # GitHub reintenta entregas; un commit ya guardado no se vuelve a insertar.
+            if db.scalar(select(AssetCommit.id).where(AssetCommit.asset_id == asset.id, AssetCommit.sha == sha)):
                 continue
             timestamp_text = commit.get("timestamp")
             try:
                 committed_at = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
             except (AttributeError, ValueError):
                 committed_at = datetime.now(timezone.utc)
+            author = commit.get("author") if isinstance(commit.get("author"), dict) else {}
             db.add(AssetCommit(
                 tenant_id=project.tenant_id,
                 asset_id=asset.id,
                 sha=sha,
                 message=message,
-                author_name=(commit.get("author") or {}).get("name", "Desconocido")[:120],
-                url=commit.get("url", "")[:500],
+                author_name=str(author.get("name") or author.get("username") or "Desconocido")[:120],
+                url=str(commit.get("url") or "")[:500],
                 committed_at=committed_at,
             ))
-    db.commit()
+            saved.add((asset_id, sha))
+    try:
+        db.commit()
+    except IntegrityError:
+        # Dos entregas simultáneas del mismo push: la otra ya guardó los commits.
+        db.rollback()
     return Response(status_code=204)
 
 
@@ -1237,7 +1378,16 @@ def create_asset_comment(tenant_id: int, project_id: int, asset_id: int, payload
 @app.delete("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/comments/{comment_id}", status_code=204)
 def delete_asset_comment(tenant_id: int, project_id: int, asset_id: int, comment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     membership = require_tenant_membership(db, tenant_id, current_user.id)
-    comment = db.scalar(select(AssetComment).where(AssetComment.id == comment_id, AssetComment.tenant_id == tenant_id, AssetComment.asset_id == asset_id))
+    comment = db.scalar(
+        select(AssetComment)
+        .join(Asset, Asset.id == AssetComment.asset_id)
+        .where(
+            AssetComment.id == comment_id,
+            AssetComment.tenant_id == tenant_id,
+            AssetComment.asset_id == asset_id,
+            Asset.project_id == project_id,
+        )
+    )
     if comment is None:
         raise HTTPException(status_code=404, detail="Comentario no encontrado")
     if comment.user_id != current_user.id and not is_manager(membership):
@@ -1328,8 +1478,10 @@ def delete_tenant(
             status_code=400,
             detail="Para confirmar, escribe exactamente el identificador del estudio",
         )
+    files = stored_files(db, Asset.tenant_id == tenant_id)
     db.delete(tenant)
     db.commit()
+    remove_stored_files(files)
 
 
 @app.get("/api/tenants/{tenant_id}/activity", response_model=list[TenantActivityRead])
@@ -1388,12 +1540,14 @@ def delete_project(
     membership = require_tenant_membership(db, tenant_id, current_user.id)
     require_manager(membership, "eliminar proyectos")
     project = get_project(db, tenant_id, project_id)
+    files = stored_files(db, Asset.tenant_id == tenant_id, Asset.project_id == project_id)
     log_activity(
         db, tenant_id, current_user, "project_deleted",
         f"Eliminó el proyecto \"{project.name}\" con todas sus tareas y builds",
     )
     db.delete(project)
     db.commit()
+    remove_stored_files(files)
 
 
 @app.delete(
@@ -1417,6 +1571,8 @@ def delete_asset(
     )
     if asset is None:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    files = stored_files(db, Asset.id == asset.id)
     log_activity(db, tenant_id, current_user, "asset_deleted", f"Eliminó la tarea \"{asset.original_name}\"")
     db.delete(asset)
     db.commit()
+    remove_stored_files(files)

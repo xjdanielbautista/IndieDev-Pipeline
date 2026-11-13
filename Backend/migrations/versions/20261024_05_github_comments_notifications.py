@@ -11,7 +11,6 @@ from sqlalchemy import inspect
 
 
 revision = "20261024_05"
-down_down_revision = None
 down_revision = "20261024_04"
 branch_labels = None
 depends_on = None
