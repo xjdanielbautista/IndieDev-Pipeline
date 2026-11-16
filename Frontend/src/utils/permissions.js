@@ -24,8 +24,9 @@ export const canBuild = (role) => isManager(role) || role === "developer";
 export function canMove(role, asset, toStatus, userId) {
   if (!role || asset.status === toStatus) return false;
   if (isManager(role)) return true;
-  if (asset.assignment_mode === "restricted" && !asset.assigned_user_ids.includes(userId)) return false;
+  // El tester revisa todas las tareas, también las restringidas.
   if (role === "tester") return TESTER_TRANSITIONS.some(([from, to]) => from === asset.status && to === toStatus);
+  if (asset.assignment_mode === "restricted" && !asset.assigned_user_ids.includes(userId)) return false;
   return CATEGORY_BY_ROLE[role] === asset.category;
 }
 

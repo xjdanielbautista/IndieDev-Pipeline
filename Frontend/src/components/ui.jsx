@@ -48,17 +48,18 @@ export function Modal({ title, onClose, children, width = "max-w-md" }) {
 
   return (
     <div
+      data-modal
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className={`w-full ${width} bg-[#151822] border border-[#272B3B] rounded-xl shadow-2xl`}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#272B3B]">
-          <h3 className="text-white font-semibold">{title}</h3>
+      <div className={`w-full ${width} max-h-[92vh] flex flex-col bg-[#151822] border border-[#272B3B] rounded-xl shadow-2xl`}>
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[#272B3B] shrink-0">
+          <h3 className="text-white font-semibold truncate">{title}</h3>
           <button onClick={onClose} className="p-1 text-gray-400 hover:text-white rounded" aria-label="Cerrar">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="p-5 overflow-y-auto">{children}</div>
       </div>
     </div>
   );

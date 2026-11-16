@@ -4,7 +4,8 @@ import { deleteAsset, getAssetHistory, lockAsset, unlockAsset, updateAsset } fro
 import { CATEGORIES, STATUSES, describeChange, formatDateTime, timeAgo } from "../utils/labels";
 import { canLock, canMove, isManager } from "../utils/permissions";
 import { Avatar, inputClass, Label, useToast } from "./ui";
-import { CommentsSection, CommitsSection, FileSection } from "./TaskExtras";
+import { CommentsSection, CommitsSection } from "./TaskExtras";
+import FilePanel from "./FilePanel";
 
 const UNDO_LIMIT = 3;
 const REVERTIBLE = ["status_changed", "category_changed", "assignment_mode_changed", "assignments_changed"];
@@ -71,7 +72,8 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
   }, [loadHistory]);
 
   useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
+    // Si hay una ventana abierta encima (comparar, ver versión), Escape cierra solo esa.
+    const onKey = (e) => e.key === "Escape" && !document.querySelector("[data-modal]") && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -287,7 +289,7 @@ export default function TaskDetail({ asset, tenant, projectId, members, currentU
             </button>
           </section>
 
-          <FileSection
+          <FilePanel
             tenant={tenant}
             projectId={projectId}
             asset={asset}

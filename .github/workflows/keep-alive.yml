@@ -1,0 +1,26 @@
+# Mantiene despierto el backend del plan gratis de Render (se duerme tras ~15 min
+# sin visitas y tarda ~40 s en despertar).
+#
+# Está APAGADO hasta que se configure la variable del repositorio KEEPALIVE_URL
+# (Settings → Secrets and variables → Actions → Variables), por ejemplo:
+#   https://indiedev-backend-pruebas.onrender.com/health
+#
+# Ojo: Render da 750 horas gratis al mes por cuenta. Un servicio siempre despierto
+# usa ~744, así que solo conviene con UN servicio por cuenta, o activarlo solo
+# los días de demo. GitHub solo corre los horarios en la rama principal y puede
+# retrasarlos unos minutos.
+name: Mantener despierto el backend
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    if: ${{ vars.KEEPALIVE_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping
+        run: curl --fail --silent --show-error --max-time 90 --retry 2 "${{ vars.KEEPALIVE_URL }}"

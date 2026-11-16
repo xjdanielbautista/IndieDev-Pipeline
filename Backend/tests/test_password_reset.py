@@ -10,7 +10,13 @@ from app import main
 def outbox(monkeypatch):
     """Captura los correos en lugar de enviarlos."""
     sent = []
-    monkeypatch.setattr(main, "send_email", lambda to, subject, text: sent.append((to, subject, text)))
+
+    def capture(to, subject, text):
+        # Solo los de recuperación; el de confirmación al registrarse se prueba aparte.
+        if "reset_token=" in text:
+            sent.append((to, subject, text))
+
+    monkeypatch.setattr(main, "send_email", capture)
     return sent
 
 

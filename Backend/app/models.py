@@ -85,6 +85,8 @@ class User(Base):
     # Hora UTC (sin zona) del último cambio de contraseña. Los tokens emitidos
     # antes de esa hora dejan de ser válidos.
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Hora UTC en que confirmó su correo. Null = sin confirmar.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Membership(Base):
@@ -294,3 +296,46 @@ class PasswordResetToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class EmailVerificationToken(Base):
+    """Enlace para confirmar el correo. Igual que en la recuperación, solo se guarda el SHA-256."""
+
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", name="fk_email_verification_tokens_user_id_users", ondelete="CASCADE"),
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AssetFileVersion(Base):
+    """Cada archivo subido a un asset. La versión más alta es la actual.
+
+    Restaurar una versión crea una nueva que apunta al mismo archivo guardado,
+    así el historial nunca se reescribe.
+    """
+
+    __tablename__ = "asset_file_versions"
+    __table_args__ = (UniqueConstraint("asset_id", "version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column()
+    storage_key: Mapped[str] = mapped_column(String(500))
+    storage_provider: Mapped[str] = mapped_column(String(20))
+    file_name: Mapped[str] = mapped_column(String(255))
+    file_size: Mapped[int] = mapped_column(BigInteger)
+    content_type: Mapped[str] = mapped_column(String(120))
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    restored_from_version: Mapped[int | None] = mapped_column(nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])

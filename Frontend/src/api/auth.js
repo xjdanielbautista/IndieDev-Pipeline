@@ -52,6 +52,33 @@ export function confirmPasswordReset(token, newPassword) {
   });
 }
 
+// POST /api/auth/verify-email -> 204. El token llega en el enlace (?verify_token=...).
+export function verifyEmail(token) {
+  return apiFetch("/api/auth/verify-email", { method: "POST", auth: false, body: { token } });
+}
+
+// POST /api/auth/verify-email/resend -> { detail }. Responde lo mismo exista o no la cuenta.
+export function resendVerification(email) {
+  return apiFetch("/api/auth/verify-email/resend", { method: "POST", auth: false, body: { email } });
+}
+
+// POST /api/auth/password -> { access_token }. Las demás sesiones se cierran;
+// esta sigue abierta con el token nuevo.
+export async function changePassword(currentPassword, newPassword) {
+  const data = await apiFetch("/api/auth/password", {
+    method: "POST",
+    body: { current_password: currentPassword, new_password: newPassword },
+  });
+  setToken(data.access_token);
+  return data;
+}
+
+// DELETE /api/auth/me -> 204
+export async function deleteAccount(password) {
+  await apiFetch("/api/auth/me", { method: "DELETE", body: { password } });
+  clearToken();
+}
+
 export function logout() {
   clearToken();
 }

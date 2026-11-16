@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import LoginScreen from "./components/LoginScreen";
-import { getResetTokenFromUrl } from "./utils/resetToken";
+import { clearUrlParam, getResetTokenFromUrl, getUrlParam } from "./utils/resetToken";
 import Workspace from "./components/Workspace";
 import { ToastProvider } from "./components/ui";
 import { AUTH_EXPIRED_EVENT, getToken, getTokenExpiration, isTokenValid } from "./api/client";
-import { getCurrentUser, logout } from "./api/auth";
+import { getCurrentUser, logout, verifyEmail } from "./api/auth";
 
 const EXPIRED_MESSAGE = "Tu sesión expiró. Vuelve a iniciar sesión.";
 
@@ -17,6 +17,26 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState("");
   const [loadError, setLoadError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  const [flash, setFlash] = useState(null); // { type: "success" | "error", message }
+
+  // Enlace del correo de confirmación (?verify_token=...): funciona con o sin sesión abierta.
+  useEffect(() => {
+    const token = getUrlParam("verify_token");
+    if (!token) return;
+    clearUrlParam("verify_token");
+    verifyEmail(token)
+      .then(() => {
+        setFlash({ type: "success", message: "Tu correo quedó confirmado." });
+        setCurrentUser((user) => (user ? { ...user, email_verified: true } : user));
+      })
+      .catch((err) => setFlash({ type: "error", message: err.message }));
+  }, []);
+
+  useEffect(() => {
+    if (!flash) return undefined;
+    const timer = setTimeout(() => setFlash(null), 8000);
+    return () => clearTimeout(timer);
+  }, [flash]);
 
   const handleLogout = useCallback((notice = "") => {
     logout();
@@ -54,6 +74,21 @@ export default function App() {
 
   return (
     <ToastProvider>
+      {flash && (
+        <div
+          role="status"
+          className={`fixed top-3 left-1/2 -translate-x-1/2 z-[70] max-w-[calc(100%-2rem)] flex items-center gap-3 px-4 py-2.5 rounded-lg border text-sm shadow-xl ${
+            flash.type === "error"
+              ? "bg-[#1a1111] border-[#FF3D00]/50 text-[#ffb8a3]"
+              : "bg-[#0f1a14] border-[#00FF66]/40 text-[#b4ffd0]"
+          }`}
+        >
+          {flash.message}
+          <button onClick={() => setFlash(null)} className="text-xs opacity-70 hover:opacity-100" aria-label="Cerrar aviso">
+            ✕
+          </button>
+        </div>
+      )}
       {!isLoggedIn ? (
         <LoginScreen
           notice={authNotice}
@@ -90,7 +125,7 @@ export default function App() {
           )}
         </div>
       ) : (
-        <Workspace currentUser={currentUser} onLogout={() => handleLogout()} />
+        <Workspace currentUser={currentUser} onLogout={(notice) => handleLogout(notice)} />
       )}
     </ToastProvider>
   );

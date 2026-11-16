@@ -107,6 +107,22 @@ def test_restricted_mode_still_applies_but_managers_bypass(client, studio):
     assert move(client, studio, "owner", code, "in_progress").status_code == 200
 
 
+def test_tester_reviews_restricted_tasks_without_being_assigned(client, studio):
+    tid, h, base, code = studio["tid"], studio["h"], studio["base"], studio["code"]
+    members = {m["username"]: m["id"] for m in client.get(f"/api/tenants/{tid}/members", headers=h["owner"]).json()}
+    client.patch(
+        f"{base}/{code['id']}",
+        json={"status": "review", "assignment_mode": "restricted", "assigned_user_ids": [members["dev"]]},
+        headers=h["owner"],
+    )
+    # Regresar a En progreso y volver a aprobar, sin estar asignado.
+    assert move(client, studio, "tester", code, "in_progress").status_code == 200
+    client.patch(f"{base}/{code['id']}", json={"status": "review"}, headers=h["dev"])
+    assert move(client, studio, "tester", code, "done").status_code == 200
+    # Sigue limitado a sus transiciones: no puede mandarla a Backlog.
+    assert move(client, studio, "tester", code, "backlog").status_code == 403
+
+
 def test_lock_rules_and_manager_force_unlock(client, studio):
     h, base, code, art = studio["h"], studio["base"], studio["code"], studio["art"]
     assert client.patch(f"{base}/{art['id']}/lock", json={}, headers=h["dev"]).status_code == 403

@@ -31,6 +31,16 @@ def tenant_storage_key(tenant_id: int, project_id: int, client_key: str) -> str:
     return f"tenants/{tenant_id}/projects/{project_id}/{relative}"[:500]
 
 
+def version_storage_key(base_key: str, version: int) -> str:
+    """Ruta de una versión: tenants/1/projects/2/hero.png -> tenants/1/projects/2/v3/hero.png.
+
+    Cada versión vive en su propia ruta para que subir una nueva no borre la anterior.
+    """
+    folder, _, name = base_key.rpartition("/")
+    key = f"{folder}/v{version}/{name}" if folder else f"v{version}/{name}"
+    return key[-500:] if len(key) > 500 else key
+
+
 def safe_storage_path(storage_key: str, upload_dir: str | None = None) -> Path:
     root = Path(upload_dir or os.getenv("LOCAL_UPLOAD_DIR", "./uploads")).resolve()
     destination = (root / storage_key.lstrip("/")).resolve()
@@ -134,6 +144,32 @@ def firebase_download_url(storage_key: str) -> dict | None:
         return None
     url = blob.generate_signed_url(expiration=timedelta(minutes=10), method="GET", version="v4")
     return {"url": url, "expires_at": expires_at.isoformat()}
+
+
+def read_stored_file(provider: str, storage_key: str, max_bytes: int) -> bytes | None:
+    """Lee hasta `max_bytes` del archivo (para la vista previa). None si no existe."""
+    if provider == "local":
+        path = local_file(storage_key)
+        if path is None:
+            return None
+        with path.open("rb") as stored:
+            return stored.read(max_bytes)
+    if provider == "s3":
+        bucket = os.getenv("S3_BUCKET")
+        if not bucket:
+            raise RuntimeError("Falta configurar S3_BUCKET")
+        client = _s3_client()
+        try:
+            response = client.get_object(Bucket=bucket, Key=storage_key, Range=f"bytes=0-{max_bytes - 1}")
+        except client.exceptions.NoSuchKey:
+            return None
+        return response["Body"].read()
+    if provider == "firebase":
+        blob = _firebase_bucket().blob(storage_key)
+        if not blob.exists():
+            return None
+        return blob.download_as_bytes(start=0, end=max_bytes - 1)
+    raise RuntimeError(f"Proveedor de almacenamiento no válido: {provider}")
 
 
 def delete_stored_file(provider: str, storage_key: str) -> None:

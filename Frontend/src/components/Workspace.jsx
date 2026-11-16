@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Settings, Table2, Users } from "lucide-react";
+import { BarChart3, Code, FolderKanban, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search, Settings, Shield, Table2, Users } from "lucide-react";
+import AccountPanel, { VerifyEmailBanner } from "./AccountPanel";
+import AdminPanel from "./AdminPanel";
 import ApiStatus from "./ApiStatus";
 import AssetVault from "./AssetVault";
 import BuildHistory from "./BuildHistory";
@@ -106,7 +108,7 @@ export default function Workspace({ currentUser, onLogout }) {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [onlyMine, setOnlyMine] = useState(false);
-  const [modal, setModal] = useState(null); // "studio" | "project" | "task" | "build"
+  const [modal, setModal] = useState(null); // "studio" | "project" | "task" | "build" | "account"
   const [openAssetId, setOpenAssetId] = useState(null);
 
   const tenant = tenants?.find((t) => t.id === tenantId) ?? null;
@@ -116,6 +118,7 @@ export default function Workspace({ currentUser, onLogout }) {
     setTenants((prev) => prev.map((t) => (t.id === updated.id ? { ...t, ...updated } : t)));
 
   const handleTenantDeleted = (deletedId) => {
+    if (!tenants.some((t) => t.id === deletedId)) return;
     const remaining = tenants.filter((t) => t.id !== deletedId);
     setTenants(remaining);
     setTab("board");
@@ -276,8 +279,9 @@ export default function Workspace({ currentUser, onLogout }) {
   ];
   const manager = isManager(tenant.role);
   if (manager) tabs.push({ id: "settings", label: "Ajustes", icon: Settings });
+  if (currentUser?.is_superadmin) tabs.push({ id: "admin", label: "Plataforma", icon: Shield });
   // Ajustes solo existe para dueño/admin; si cambias a un estudio donde no lo eres, se muestra el tablero.
-  const view = tab === "settings" && !manager ? "board" : tab;
+  const view = (tab === "settings" && !manager) || (tab === "admin" && !currentUser?.is_superadmin) ? "board" : tab;
   const latestBuild = [...builds].sort((a, b) => b.id - a.id)[0];
 
   return (
@@ -346,13 +350,17 @@ export default function Workspace({ currentUser, onLogout }) {
               setOpenAssetId(n.asset_id);
             }}
           />
-          <div className="flex items-center gap-2 pl-3 border-l border-[#272B3B]">
+          <button
+            onClick={() => setModal("account")}
+            title="Mi cuenta"
+            className="flex items-center gap-2 pl-3 border-l border-[#272B3B] rounded-r hover:bg-[#1C202D] py-1 pr-1"
+          >
             <div className="text-right hidden sm:block">
               <div className="text-sm font-medium text-white">{currentUser?.username ?? currentUser?.email}</div>
               <div className="text-[10px] font-mono text-gray-500">{currentUser?.email}</div>
             </div>
             <Avatar user={currentUser} size="w-8 h-8 text-xs" />
-          </div>
+          </button>
           <button
             onClick={onLogout}
             title="Cerrar sesión"
@@ -362,6 +370,8 @@ export default function Workspace({ currentUser, onLogout }) {
           </button>
         </div>
       </header>
+
+      <VerifyEmailBanner user={currentUser} />
 
       <div className="bg-[#0B0D14] border-b border-[#272B3B] flex flex-wrap items-center justify-between gap-3 px-4 md:px-6 py-2 shrink-0">
         <nav className="flex gap-1 overflow-x-auto max-w-full -mx-1 px-1">
@@ -478,6 +488,8 @@ export default function Workspace({ currentUser, onLogout }) {
           />
         ) : view === "builds" ? (
           <BuildHistory builds={builds} onNew={canBuild(tenant.role) ? () => setModal("build") : null} />
+        ) : view === "admin" ? (
+          <AdminPanel currentUser={currentUser} onTenantDeleted={handleTenantDeleted} />
         ) : view === "settings" ? (
           <StudioSettings
             tenant={tenant}
@@ -555,6 +567,11 @@ export default function Workspace({ currentUser, onLogout }) {
               setModal(null);
             }}
           />
+        </Modal>
+      )}
+      {modal === "account" && (
+        <Modal title="Mi cuenta" onClose={() => setModal(null)} width="max-w-lg">
+          <AccountPanel user={currentUser} onDeleted={() => onLogout("Tu cuenta se eliminó.")} />
         </Modal>
       )}
       {modal === "studio" && (

@@ -70,6 +70,8 @@ export function describeChange(entry) {
         : "liberó el archivo";
     case "file_uploaded":
       return `subió una nueva versión${entry.new_value ? `: ${entry.new_value}` : ""}`;
+    case "file_restored":
+      return `restauró el archivo${entry.new_value ? `: ${entry.new_value}` : ""}`;
     default:
       return entry.action;
   }
