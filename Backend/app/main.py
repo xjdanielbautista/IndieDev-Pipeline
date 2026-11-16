@@ -12,7 +12,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -465,9 +465,21 @@ def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(
     user = db.get(User, reset.user_id)
     if user is None:
         raise HTTPException(status_code=400, detail="El enlace no es válido o ya expiró. Solicita uno nuevo.")
+    # Marcar el enlace como usado de forma atómica: si dos peticiones llegan a la
+    # vez con el mismo enlace, solo una actualiza la fila y la otra se rechaza.
+    claimed = db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.id == reset.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="El enlace no es válido o ya expiró. Solicita uno nuevo.",
+        )
     user.password_hash = hash_password(payload.new_password)
     user.password_changed_at = now
-    reset.used_at = now
     # Quien recupera su cuenta no debe seguir bloqueado por intentos fallidos.
     identifiers = [value.lower() for value in (user.username, user.email) if value]
     db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))
