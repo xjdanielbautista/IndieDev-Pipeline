@@ -23,9 +23,11 @@ from .models import (
     AssetAssignmentMode,
     AssetCommit,
     AssetComment,
+    AssetFileVersion,
     AssetHistory,
     AssetStatus,
     Build,
+    EmailVerificationToken,
     MemberRole,
     LoginThrottle,
     Membership,
@@ -43,11 +45,17 @@ from .schemas import (
     AssetCommentCreate,
     AssetCommentRead,
     AssetCreate,
+    AssetFileVersionRead,
     AssetHistoryRead,
     AssetLock,
     AssetRead,
     AssetUpdate,
+    AccountDelete,
+    AdminTenantRead,
+    AdminUserRead,
     BuildCreate,
+    CurrentUserRead,
+    EmailVerificationConfirm,
     BuildRead,
     MemberAdd,
     MemberRead,
@@ -56,6 +64,7 @@ from .schemas import (
     MemberRoleUpdate,
     NotificationRead,
     NotificationReadUpdate,
+    PasswordChange,
     PasswordResetConfirm,
     PasswordResetRequest,
     ProjectCreate,
@@ -94,10 +103,12 @@ from .storage import (
     firebase_download_url,
     format_file_size,
     local_file,
+    read_stored_file,
     s3_download_url,
     save_firebase,
     save_local,
     save_s3,
+    version_storage_key,
 )
 
 
@@ -282,13 +293,24 @@ def log_activity(db: Session, tenant_id: int, actor: User, action: str, summary:
 
 
 def stored_files(db: Session, *conditions) -> list[tuple[str, str]]:
-    """(proveedor, ruta) de los assets que ya tienen archivo subido."""
+    """(proveedor, ruta) de todos los archivos guardados de los assets que cumplen `conditions`.
+
+    Incluye cada versión y la ruta original (archivos de antes de las versiones).
+    Restaurar reutiliza rutas, por eso se quitan los repetidos.
+    """
     rows = db.execute(
         select(Asset.storage_provider, Asset.storage_key).where(
             Asset.file_uploaded_at.is_not(None), *conditions
         )
     ).all()
-    return [(getattr(provider, "value", provider), key) for provider, key in rows]
+    files = {(getattr(provider, "value", provider), key) for provider, key in rows}
+    version_rows = db.execute(
+        select(AssetFileVersion.storage_provider, AssetFileVersion.storage_key)
+        .join(Asset, Asset.id == AssetFileVersion.asset_id)
+        .where(*conditions)
+    ).all()
+    files.update((provider, key) for provider, key in version_rows)
+    return sorted(files)
 
 
 def remove_stored_files(files: list[tuple[str, str]]) -> None:
@@ -304,6 +326,25 @@ def remove_stored_files(files: list[tuple[str, str]]) -> None:
             logger.exception("No se pudo borrar el archivo %s (%s)", storage_key, provider)
 
 
+def superadmin_emails() -> set[str]:
+    return {email.strip().lower() for email in os.getenv("SUPERADMIN_EMAILS", "").split(",") if email.strip()}
+
+
+def is_superadmin(user: User) -> bool:
+    """Superadmin de toda la plataforma, definido por SUPERADMIN_EMAILS.
+
+    Exige el correo confirmado: si no, alguien podría registrarse con ese correo
+    antes que su dueño y quedarse con el acceso.
+    """
+    return user.email_verified_at is not None and user.email.lower() in superadmin_emails()
+
+
+def require_superadmin(current_user: User = Depends(get_current_user)) -> User:
+    if not is_superadmin(current_user):
+        raise HTTPException(status_code=403, detail="Solo el administrador de la plataforma puede hacer esto")
+    return current_user
+
+
 def display_name(user: User | None) -> str:
     if user is None:
         return "usuario eliminado"
@@ -316,7 +357,7 @@ def health_check():
 
 
 @app.post("/api/auth/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-def register_user(payload: UserRegister, db: Session = Depends(get_db)):
+def register_user(payload: UserRegister, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     username = payload.username.strip().lower()
     email = payload.email.strip().lower()
     existing_user = db.scalar(
@@ -341,6 +382,7 @@ def register_user(payload: UserRegister, db: Session = Depends(get_db)):
             status_code=409,
             detail="El correo o nombre de usuario ya está registrado",
         ) from error
+    queue_verification_email(db, user, background_tasks)
     return user
 
 
@@ -376,12 +418,27 @@ def login_for_access_token(
     if throttle is not None:
         db.delete(throttle)
         db.commit()
+    if email_verification_required() and user.email_verified_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Confirma tu correo para entrar. Revisa tu bandeja o pide un enlace nuevo.",
+        )
     return Token(access_token=create_access_token(user.id))
 
 
-@app.get("/api/auth/me", response_model=UserRead)
+def current_user_read(user: User) -> CurrentUserRead:
+    return CurrentUserRead(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        email_verified=user.email_verified_at is not None,
+        is_superadmin=is_superadmin(user),
+    )
+
+
+@app.get("/api/auth/me", response_model=CurrentUserRead)
 def read_current_user(current_user: User = Depends(get_current_user)):
-    return current_user
+    return current_user_read(current_user)
 
 
 # ---------- Recuperación de contraseña ----------
@@ -480,10 +537,165 @@ def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(
         )
     user.password_hash = hash_password(payload.new_password)
     user.password_changed_at = now
+    # Abrir el enlace del correo también demuestra que el correo es suyo.
+    if user.email_verified_at is None:
+        user.email_verified_at = now
     # Quien recupera su cuenta no debe seguir bloqueado por intentos fallidos.
     identifiers = [value.lower() for value in (user.username, user.email) if value]
     db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))
     db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------- Confirmación de correo ----------
+EMAIL_VERIFICATION_HOURS = int(os.getenv("EMAIL_VERIFICATION_HOURS", "48"))
+MAX_VERIFICATION_EMAILS = 3  # por usuario cada 15 minutos
+VERIFICATION_SENT_MESSAGE = "Si la cuenta existe y no está confirmada, te enviamos un enlace nuevo."
+INVALID_VERIFICATION = "El enlace de confirmación no es válido o ya expiró. Pide uno nuevo."
+
+
+def email_verification_required() -> bool:
+    """Con REQUIRE_EMAIL_VERIFICATION=true no se puede entrar sin confirmar el correo."""
+    return os.getenv("REQUIRE_EMAIL_VERIFICATION", "false").strip().lower() in ("1", "true", "yes", "si", "sí")
+
+
+def queue_verification_email(db: Session, user: User, background_tasks: BackgroundTasks) -> None:
+    """Crea un enlace de confirmación y programa el correo (con límite de envíos)."""
+    if user.email_verified_at is not None:
+        return
+    now = utcnow()
+    db.execute(delete(EmailVerificationToken).where(EmailVerificationToken.expires_at < now - timedelta(days=1)))
+    recent = db.scalar(
+        select(func.count(EmailVerificationToken.id)).where(
+            EmailVerificationToken.user_id == user.id,
+            EmailVerificationToken.created_at > now - timedelta(minutes=15),
+        )
+    )
+    if recent >= MAX_VERIFICATION_EMAILS:
+        db.commit()
+        return
+    token = secrets.token_urlsafe(32)
+    db.add(EmailVerificationToken(
+        user_id=user.id,
+        token_hash=hash_reset_token(token),
+        created_at=now,
+        expires_at=now + timedelta(hours=EMAIL_VERIFICATION_HOURS),
+    ))
+    db.commit()
+    link = f"{frontend_url()}/?verify_token={token}"
+    background_tasks.add_task(
+        send_email,
+        user.email,
+        "Confirma tu correo de IndieDev Pipeline",
+        f"Hola {display_name(user)}:\n\n"
+        f"Abre este enlace para confirmar tu correo (vence en {EMAIL_VERIFICATION_HOURS} horas):\n\n"
+        f"{link}\n\n"
+        "Si no creaste una cuenta en IndieDev Pipeline, ignora este correo.",
+    )
+
+
+@app.post("/api/auth/verify-email", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_email(payload: EmailVerificationConfirm, db: Session = Depends(get_db)):
+    now = utcnow()
+    record = db.scalar(
+        select(EmailVerificationToken).where(EmailVerificationToken.token_hash == hash_reset_token(payload.token))
+    )
+    if record is None or record.used_at is not None or record.expires_at <= now:
+        raise HTTPException(status_code=400, detail=INVALID_VERIFICATION)
+    user = db.get(User, record.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail=INVALID_VERIFICATION)
+    claimed = db.execute(
+        update(EmailVerificationToken)
+        .where(EmailVerificationToken.id == record.id, EmailVerificationToken.used_at.is_(None))
+        .values(used_at=now)
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=INVALID_VERIFICATION)
+    if user.email_verified_at is None:
+        user.email_verified_at = now
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/auth/verify-email/resend", status_code=status.HTTP_202_ACCEPTED)
+def resend_verification_email(
+    payload: PasswordResetRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Reenvía el enlace. Responde lo mismo exista o no la cuenta."""
+    email = payload.email.strip().lower()
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
+    if user is not None:
+        queue_verification_email(db, user, background_tasks)
+    return {"detail": VERIFICATION_SENT_MESSAGE}
+
+
+# ---------- Mi cuenta ----------
+@app.post("/api/auth/password", response_model=Token)
+def change_password(
+    payload: PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cambia la contraseña. Cierra las demás sesiones y devuelve un token nuevo para esta."""
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="La contraseña actual no es correcta")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="La contraseña nueva debe ser distinta a la actual")
+    current_user.password_hash = hash_password(payload.new_password)
+    current_user.password_changed_at = utcnow()
+    db.commit()
+    return Token(access_token=create_access_token(current_user.id))
+
+
+def delete_user_account(db: Session, user: User) -> None:
+    """Elimina al usuario y lo quita de todo. No borra estudios: si es dueño de alguno, falla.
+
+    Lo que hizo (historial, comentarios, versiones subidas) se conserva sin autor.
+    """
+    owned = db.scalars(select(Tenant.name).where(Tenant.owner_user_id == user.id).order_by(Tenant.name)).all()
+    if owned:
+        raise HTTPException(
+            status_code=409,
+            detail="Primero elimina los estudios de los que es dueño: " + ", ".join(owned),
+        )
+    name = display_name(user)
+    for tenant_id in db.scalars(select(Membership.tenant_id).where(Membership.user_id == user.id)).all():
+        db.add(TenantActivity(
+            tenant_id=tenant_id, user_id=None, actor_username=name[:50],
+            action="account_deleted", summary=f"La cuenta de {name} fue eliminada",
+        ))
+    db.execute(update(Asset).where(Asset.created_by_user_id == user.id).values(created_by_user_id=None))
+    db.execute(
+        update(Asset).where(Asset.locked_by_user_id == user.id).values(locked_by_user_id=None, locked_at=None)
+    )
+    for model in (AssetHistory, AssetComment, TenantActivity):
+        db.execute(update(model).where(model.user_id == user.id).values(user_id=None))
+    db.execute(
+        update(AssetFileVersion)
+        .where(AssetFileVersion.uploaded_by_user_id == user.id)
+        .values(uploaded_by_user_id=None)
+    )
+    for model in (AssetAssignment, Membership, Notification, PasswordResetToken, EmailVerificationToken):
+        db.execute(delete(model).where(model.user_id == user.id))
+    identifiers = [value.lower() for value in (user.username, user.email) if value]
+    db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))
+    db.delete(user)
+    db.commit()
+
+
+@app.delete("/api/auth/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_account(
+    payload: AccountDelete,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="La contraseña no es correcta")
+    delete_user_account(db, current_user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1128,6 +1340,128 @@ def unlock_asset(
     return asset
 
 
+# ---------- Archivos y versiones ----------
+# Vista previa: el backend lee el archivo y lo entrega directo. Así funciona con
+# cualquier proveedor sin configurar CORS en el bucket.
+PREVIEW_MAX_BYTES = int(os.getenv("PREVIEW_MAX_MB", "5")) * 1024 * 1024
+
+
+def get_tenant_asset(db: Session, tenant_id: int, project_id: int, asset_id: int) -> Asset:
+    asset = db.scalar(
+        select(Asset).where(
+            Asset.id == asset_id,
+            Asset.tenant_id == tenant_id,
+            Asset.project_id == project_id,
+        )
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
+    return asset
+
+
+def latest_version(db: Session, asset: Asset) -> AssetFileVersion | None:
+    return db.scalar(
+        select(AssetFileVersion)
+        .where(AssetFileVersion.asset_id == asset.id)
+        .order_by(AssetFileVersion.version.desc())
+        .limit(1)
+    )
+
+
+def get_version(db: Session, asset: Asset, version_id: int) -> AssetFileVersion:
+    version = db.scalar(
+        select(AssetFileVersion).where(
+            AssetFileVersion.id == version_id, AssetFileVersion.asset_id == asset.id
+        )
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail="Versión no encontrada")
+    return version
+
+
+def current_file(db: Session, asset: Asset) -> tuple[str, str, str, str]:
+    """(proveedor, ruta, nombre, tipo) del archivo actual del asset."""
+    if asset.file_uploaded_at is None or asset.file_size is None:
+        raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+    version = latest_version(db, asset)
+    if version is not None:
+        return version.storage_provider, version.storage_key, version.file_name, version.content_type
+    # Asset con archivo de antes de que existieran las versiones.
+    provider = getattr(asset.storage_provider, "value", asset.storage_provider)
+    return provider, asset.storage_key, asset.original_name, asset.content_type or "application/octet-stream"
+
+
+def serve_stored_file(provider: str, storage_key: str, file_name: str, content_type: str):
+    """Descarga: archivo directo (local) o { url, expires_at } firmada (S3/Firebase)."""
+    try:
+        if provider == StorageProvider.LOCAL.value:
+            path = local_file(storage_key)
+            if path is None:
+                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+            return FileResponse(path, filename=file_name, media_type=content_type)
+        if provider == StorageProvider.S3.value:
+            return s3_download_url(storage_key)
+        if provider == StorageProvider.FIREBASE.value:
+            result = firebase_download_url(storage_key)
+            if result is None:
+                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+            return result
+        raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("No se pudo descargar el archivo %s de %s", storage_key, provider)
+        raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error
+
+
+def preview_stored_file(provider: str, storage_key: str, file_size: int, content_type: str) -> Response:
+    if file_size > PREVIEW_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo es muy grande para la vista previa (máximo {PREVIEW_MAX_BYTES // (1024 * 1024)} MB)",
+        )
+    try:
+        content = read_stored_file(provider, storage_key, PREVIEW_MAX_BYTES)
+    except Exception as error:
+        logger.exception("No se pudo leer el archivo %s de %s", storage_key, provider)
+        raise HTTPException(status_code=500, detail="No se pudo leer el archivo") from error
+    if content is None:
+        raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+    return Response(
+        content=content,
+        media_type=content_type,
+        # nosniff + sandbox: un .html o .svg subido no puede ejecutar código en el dominio de la API.
+        headers={
+            "Cache-Control": "private, max-age=60",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+        },
+    )
+
+
+def save_to_provider(provider: str, storage_key: str, file, content_type: str) -> None:
+    if provider == StorageProvider.LOCAL.value:
+        save_local(storage_key, file)
+    elif provider == StorageProvider.S3.value:
+        save_s3(storage_key, file, content_type)
+    elif provider == StorageProvider.FIREBASE.value:
+        save_firebase(storage_key, file, content_type)
+    else:
+        raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
+
+
+def require_lock_for_file_change(membership: Membership, asset: Asset, user: User, action: str) -> None:
+    require_can_lock(membership, asset.category)
+    if asset.locked_by_user_id != user.id:
+        raise HTTPException(status_code=409, detail=f"Bloquea el archivo antes de {action}")
+
+
+def apply_version_to_asset(asset: Asset, version: AssetFileVersion) -> None:
+    asset.file_size = version.file_size
+    asset.content_type = version.content_type[:120]
+    asset.file_uploaded_at = version.uploaded_at
+
+
 @app.post(
     "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file",
     response_model=AssetRead,
@@ -1141,22 +1475,8 @@ def upload_asset_file(  # sin async: la subida a S3/Firebase es bloqueante y as�
     current_user: User = Depends(get_current_user),
 ):
     membership = require_tenant_membership(db, tenant_id, current_user.id)
-    asset = db.scalar(
-        select(Asset).where(
-            Asset.id == asset_id,
-            Asset.tenant_id == tenant_id,
-            Asset.project_id == project_id,
-        )
-    )
-    if asset is None:
-        raise HTTPException(status_code=404, detail="Asset no encontrado")
-
-    require_can_lock(membership, asset.category)
-    if asset.locked_by_user_id != current_user.id:
-        raise HTTPException(
-            status_code=409,
-            detail="Bloquea el archivo antes de subir una nueva versión",
-        )
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    require_lock_for_file_change(membership, asset, current_user, "subir una nueva versión")
 
     try:
         max_upload_mb = int(os.getenv("MAX_UPLOAD_MB", "200"))
@@ -1170,38 +1490,50 @@ def upload_asset_file(  # sin async: la subida a S3/Firebase es bloqueante y as�
     if file_size > max_upload_bytes:
         raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {max_upload_mb} MB")
 
-    content_type = file.content_type or "application/octet-stream"
+    content_type = (file.content_type or "application/octet-stream")[:120]
+    file_name = (file.filename or asset.original_name)[:255]
+    previous = latest_version(db, asset)
+    number = previous.version + 1 if previous else 1
+    provider = getattr(asset.storage_provider, "value", asset.storage_provider)
+    storage_key = version_storage_key(asset.storage_key, number)
     try:
-        if asset.storage_provider == StorageProvider.LOCAL.value:
-            save_local(asset.storage_key, file.file)
-        elif asset.storage_provider == StorageProvider.S3.value:
-            save_s3(asset.storage_key, file.file, content_type)
-        elif asset.storage_provider == StorageProvider.FIREBASE.value:
-            save_firebase(asset.storage_key, file.file, content_type)
-        else:
-            raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
+        save_to_provider(provider, storage_key, file.file, content_type)
     except HTTPException:
         raise
     except Exception as error:
         # Sin este log el 500 no dice nada: casi siempre es configuración del proveedor
         # (ASSET_STORAGE_PROVIDER, credenciales o bucket) y la causa real queda en los logs.
-        logger.exception(
-            "No se pudo guardar el archivo %s en %s", asset.storage_key, asset.storage_provider
-        )
+        logger.exception("No se pudo guardar el archivo %s en %s", storage_key, provider)
         raise HTTPException(status_code=500, detail="No se pudo guardar el archivo") from error
 
-    uploaded_at = datetime.now(timezone.utc)
-    asset.file_size = file_size
-    asset.content_type = content_type[:120]
-    asset.file_uploaded_at = uploaded_at
+    version = AssetFileVersion(
+        tenant_id=tenant_id,
+        asset_id=asset.id,
+        version=number,
+        storage_key=storage_key,
+        storage_provider=provider,
+        file_name=file_name,
+        file_size=file_size,
+        content_type=content_type,
+        uploaded_by_user_id=current_user.id,
+        uploaded_at=datetime.now(timezone.utc),
+    )
+    db.add(version)
+    apply_version_to_asset(asset, version)
     record_asset_change(
         db,
         asset,
         current_user,
         "file_uploaded",
-        new_value=f"{file.filename or asset.original_name} ({format_file_size(file_size)})",
+        new_value=f"v{number}: {file_name} ({format_file_size(file_size)})",
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        # Dos subidas simultáneas calcularon el mismo número de versión.
+        db.rollback()
+        remove_stored_files([(provider, storage_key)])
+        raise HTTPException(status_code=409, detail="Otra subida terminó al mismo tiempo; intenta de nuevo") from error
     db.refresh(asset)
     return asset
 
@@ -1215,43 +1547,121 @@ def download_asset_file(
     current_user: User = Depends(get_current_user),
 ):
     require_tenant_membership(db, tenant_id, current_user.id)
-    asset = db.scalar(
-        select(Asset).where(
-            Asset.id == asset_id,
-            Asset.tenant_id == tenant_id,
-            Asset.project_id == project_id,
-        )
-    )
-    if asset is None:
-        raise HTTPException(status_code=404, detail="Asset no encontrado")
-    if asset.file_uploaded_at is None or asset.file_size is None:
-        raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    return serve_stored_file(*current_file(db, asset))
 
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/file/preview")
+def preview_asset_file(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    provider, storage_key, _, content_type = current_file(db, asset)
+    return preview_stored_file(provider, storage_key, asset.file_size, content_type)
+
+
+@app.get(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/versions",
+    response_model=list[AssetFileVersionRead],
+)
+def list_asset_versions(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    return db.scalars(
+        select(AssetFileVersion)
+        .where(AssetFileVersion.asset_id == asset.id)
+        .order_by(AssetFileVersion.version.desc())
+    ).all()
+
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/versions/{version_id}/file")
+def download_asset_version(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    version = get_version(db, asset, version_id)
+    return serve_stored_file(version.storage_provider, version.storage_key, version.file_name, version.content_type)
+
+
+@app.get("/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/versions/{version_id}/preview")
+def preview_asset_version(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_tenant_membership(db, tenant_id, current_user.id)
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    version = get_version(db, asset, version_id)
+    return preview_stored_file(version.storage_provider, version.storage_key, version.file_size, version.content_type)
+
+
+@app.post(
+    "/api/tenants/{tenant_id}/projects/{project_id}/assets/{asset_id}/versions/{version_id}/restore",
+    response_model=AssetRead,
+)
+def restore_asset_version(
+    tenant_id: int,
+    project_id: int,
+    asset_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Vuelve a una versión anterior creando una versión nueva con el mismo archivo."""
+    membership = require_tenant_membership(db, tenant_id, current_user.id)
+    asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
+    require_lock_for_file_change(membership, asset, current_user, "restaurar una versión")
+    source = get_version(db, asset, version_id)
+    previous = latest_version(db, asset)
+    if previous is not None and previous.id == source.id:
+        raise HTTPException(status_code=409, detail="Esa ya es la versión actual")
+    number = previous.version + 1
+    version = AssetFileVersion(
+        tenant_id=tenant_id,
+        asset_id=asset.id,
+        version=number,
+        storage_key=source.storage_key,
+        storage_provider=source.storage_provider,
+        file_name=source.file_name,
+        file_size=source.file_size,
+        content_type=source.content_type,
+        uploaded_by_user_id=current_user.id,
+        restored_from_version=source.version,
+        uploaded_at=datetime.now(timezone.utc),
+    )
+    db.add(version)
+    apply_version_to_asset(asset, version)
+    record_asset_change(
+        db, asset, current_user, "file_restored",
+        previous_value=f"v{previous.version}", new_value=f"v{number} (copia de v{source.version})",
+    )
     try:
-        if asset.storage_provider == StorageProvider.LOCAL.value:
-            path = local_file(asset.storage_key)
-            if path is None:
-                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
-            return FileResponse(
-                path,
-                filename=asset.original_name,
-                media_type=asset.content_type or "application/octet-stream",
-            )
-        if asset.storage_provider == StorageProvider.S3.value:
-            return s3_download_url(asset.storage_key)
-        if asset.storage_provider == StorageProvider.FIREBASE.value:
-            result = firebase_download_url(asset.storage_key)
-            if result is None:
-                raise HTTPException(status_code=404, detail="Este asset todavía no tiene archivo")
-            return result
-        raise HTTPException(status_code=500, detail="Proveedor de almacenamiento no válido")
-    except HTTPException:
-        raise
-    except Exception as error:
-        logger.exception(
-            "No se pudo descargar el archivo %s de %s", asset.storage_key, asset.storage_provider
-        )
-        raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Otra subida terminó al mismo tiempo; intenta de nuevo") from error
+    db.refresh(asset)
+    return asset
 
 
 @app.post(
@@ -1599,3 +2009,89 @@ def delete_asset(
     db.delete(asset)
     db.commit()
     remove_stored_files(files)
+
+
+# =====================================================================
+# Panel de administración de la plataforma (SUPERADMIN_EMAILS).
+# =====================================================================
+
+
+@app.get("/api/admin/users", response_model=list[AdminUserRead])
+def admin_list_users(db: Session = Depends(get_db), _: User = Depends(require_superadmin)):
+    users = db.scalars(select(User).order_by(User.id)).all()
+    rows = db.execute(
+        select(Membership.user_id, Tenant.name, Tenant.owner_user_id)
+        .join(Tenant, Tenant.id == Membership.tenant_id)
+        .order_by(Tenant.name)
+    ).all()
+    studios: dict[int, list[str]] = {}
+    owned: dict[int, list[str]] = {}
+    for user_id, tenant_name, owner_id in rows:
+        studios.setdefault(user_id, []).append(tenant_name)
+        if owner_id == user_id:
+            owned.setdefault(user_id, []).append(tenant_name)
+    return [
+        AdminUserRead(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            email_verified=user.email_verified_at is not None,
+            is_superadmin=is_superadmin(user),
+            studios=studios.get(user.id, []),
+            owned_studios=owned.get(user.id, []),
+        )
+        for user in users
+    ]
+
+
+@app.get("/api/admin/tenants", response_model=list[AdminTenantRead])
+def admin_list_tenants(db: Session = Depends(get_db), _: User = Depends(require_superadmin)):
+    def counts(column):
+        return dict(db.execute(select(column, func.count()).group_by(column)).all())
+
+    members = counts(Membership.tenant_id)
+    projects = counts(Project.tenant_id)
+    assets = counts(Asset.tenant_id)
+    owners = dict(db.execute(select(User.id, User.username)).all())
+    return [
+        AdminTenantRead(
+            id=tenant.id,
+            name=tenant.name,
+            slug=tenant.slug,
+            owner_username=owners.get(tenant.owner_user_id),
+            member_count=members.get(tenant.id, 0),
+            project_count=projects.get(tenant.id, 0),
+            asset_count=assets.get(tenant.id, 0),
+            created_at=tenant.created_at,
+        )
+        for tenant in db.scalars(select(Tenant).order_by(Tenant.id)).all()
+    ]
+
+
+@app.delete("/api/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def admin_delete_user(
+    user_id: int, db: Session = Depends(get_db), admin: User = Depends(require_superadmin)
+):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="Para eliminar tu propia cuenta usa Mi cuenta")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    delete_user_account(db, user)
+    logger.warning("Superadmin %s eliminó al usuario %s (id %s)", admin.email, user.email, user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete("/api/admin/tenants/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def admin_delete_tenant(
+    tenant_id: int, db: Session = Depends(get_db), admin: User = Depends(require_superadmin)
+):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Estudio no encontrado")
+    files = stored_files(db, Asset.tenant_id == tenant_id)
+    db.delete(tenant)
+    db.commit()
+    remove_stored_files(files)
+    logger.warning("Superadmin %s eliminó el estudio %s (id %s)", admin.email, tenant.slug, tenant_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

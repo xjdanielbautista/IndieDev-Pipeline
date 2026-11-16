@@ -62,6 +62,45 @@ class UserRead(BaseModel):
     email: str
 
 
+class CurrentUserRead(UserRead):
+    email_verified: bool
+    is_superadmin: bool
+
+
+class EmailVerificationConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class AccountDelete(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AdminUserRead(BaseModel):
+    id: int
+    username: str | None
+    email: str
+    email_verified: bool
+    is_superadmin: bool
+    studios: list[str]
+    owned_studios: list[str]
+
+
+class AdminTenantRead(BaseModel):
+    id: int
+    name: str
+    slug: str
+    owner_username: str | None
+    member_count: int
+    project_count: int
+    asset_count: int
+    created_at: datetime
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -254,3 +293,17 @@ class NotificationRead(BaseModel):
 class NotificationReadUpdate(BaseModel):
     ids: list[int] | None = None
     all: bool = False
+
+
+class AssetFileVersionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_id: int
+    version: int
+    file_name: str
+    file_size: int
+    content_type: str
+    uploaded_by: UserSummary | None
+    restored_from_version: int | None
+    uploaded_at: datetime
