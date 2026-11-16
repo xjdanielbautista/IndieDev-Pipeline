@@ -43,6 +43,8 @@ def test_preview_returns_content_with_safe_headers(client, asset):
     assert response.content == b"<script>alert(1)</script>"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "sandbox" in response.headers["content-security-policy"]
+    # La actual cambia con cada subida: no se guarda en caché.
+    assert response.headers["cache-control"] == "no-store"
     versions = client.get(f"{asset['url']}/versions", headers=asset["h"]).json()
     assert client.get(f"{asset['url']}/versions/{versions[0]['id']}/preview", headers=asset["h"]).status_code == 200
 

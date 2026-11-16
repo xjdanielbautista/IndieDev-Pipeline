@@ -1414,7 +1414,14 @@ def serve_stored_file(provider: str, storage_key: str, file_name: str, content_t
         raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error
 
 
-def preview_stored_file(provider: str, storage_key: str, file_size: int, content_type: str) -> Response:
+def preview_stored_file(
+    provider: str, storage_key: str, file_size: int, content_type: str, immutable: bool = False
+) -> Response:
+    """Contenido para la vista previa.
+
+    La URL del archivo actual no cambia al subir otra versión, así que no se guarda
+    en caché; la de una versión concreta nunca cambia y sí se puede guardar.
+    """
     if file_size > PREVIEW_MAX_BYTES:
         raise HTTPException(
             status_code=413,
@@ -1432,7 +1439,7 @@ def preview_stored_file(provider: str, storage_key: str, file_size: int, content
         media_type=content_type,
         # nosniff + sandbox: un .html o .svg subido no puede ejecutar código en el dominio de la API.
         headers={
-            "Cache-Control": "private, max-age=60",
+            "Cache-Control": "private, max-age=86400, immutable" if immutable else "no-store",
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
         },
@@ -1612,7 +1619,9 @@ def preview_asset_version(
     require_tenant_membership(db, tenant_id, current_user.id)
     asset = get_tenant_asset(db, tenant_id, project_id, asset_id)
     version = get_version(db, asset, version_id)
-    return preview_stored_file(version.storage_provider, version.storage_key, version.file_size, version.content_type)
+    return preview_stored_file(
+        version.storage_provider, version.storage_key, version.file_size, version.content_type, immutable=True
+    )
 
 
 @app.post(

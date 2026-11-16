@@ -1,20 +1,18 @@
 // Secciones del panel de una tarea que dependen de funciones pendientes del backend
 // (ver docs/PENDIENTES_BACKEND.md). Mientras el endpoint no exista muestran
 // "Próximamente"; se activan solas cuando el backend lo implemente.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, ExternalLink, FileUp, GitBranch, GitCommit, MessageSquare, Send, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ExternalLink, GitBranch, GitCommit, MessageSquare, Send, Trash2 } from "lucide-react";
 import { isNotImplemented } from "../api/client";
 import {
   addComment,
   connectGithub,
   deleteComment,
-  downloadAssetFile,
   listComments,
   listCommits,
-  uploadAssetFile,
 } from "../api/studio";
-import { formatBytes, formatDateTime, timeAgo } from "../utils/labels";
-import { canLock, isManager } from "../utils/permissions";
+import { formatDateTime, timeAgo } from "../utils/labels";
+import { isManager } from "../utils/permissions";
 import { Avatar, inputClass, useToast } from "./ui";
 
 function SectionTitle({ icon: Icon, children, badge }) {
@@ -60,96 +58,6 @@ function useOptionalList(loader, deps) {
   }, [reload]);
 
   return [state, reload, setState];
-}
-
-// ---------- Archivo ----------
-export function FileSection({ tenant, projectId, asset, role, currentUser, onChanged }) {
-  const notify = useToast();
-  const inputRef = useRef(null);
-  const [uploading, setUploading] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
-
-  // El backend activa esta función al agregar file_size/content_type/file_uploaded_at a AssetRead.
-  const supported = "file_size" in asset && !unavailable;
-  const hasFile = asset.file_size !== null && asset.file_size !== undefined;
-  const lockedByMe = asset.locked_by_user_id === currentUser?.id;
-  const canUpload = lockedByMe && canLock(role, asset.category);
-
-  const upload = async (file) => {
-    if (!file) return;
-    setUploading(true);
-    try {
-      onChanged(await uploadAssetFile(tenant.id, projectId, asset.id, file));
-      notify("Nueva versión subida", "success");
-    } catch (err) {
-      if (isNotImplemented(err)) setUnavailable(true);
-      else if (err.status !== 401) notify(err.message);
-    } finally {
-      setUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
-    }
-  };
-
-  const download = async () => {
-    try {
-      await downloadAssetFile(tenant.id, projectId, asset.id, asset.original_name);
-    } catch (err) {
-      if (isNotImplemented(err)) setUnavailable(true);
-      else if (err.status !== 401) notify(err.message);
-    }
-  };
-
-  return (
-    <section>
-      <SectionTitle icon={FileUp}>Archivo</SectionTitle>
-      {!supported ? (
-        <ComingSoon>
-          Aquí se podrá subir el archivo real (sprite, modelo, script…) a la nube y descargar la última versión.
-          Para subir, primero tendrás que bloquearlo.
-        </ComingSoon>
-      ) : (
-        <div className="rounded-lg border border-[#272B3B] bg-[#0B0D14] p-3 flex items-center justify-between gap-3">
-          <div className="text-xs min-w-0">
-            {hasFile ? (
-              <>
-                <p className="text-white truncate">{asset.original_name}</p>
-                <p className="text-gray-500">
-                  {formatBytes(asset.file_size)} · subido {timeAgo(asset.file_uploaded_at)}
-                </p>
-              </>
-            ) : (
-              <p className="text-gray-500">Todavía no hay archivo.</p>
-            )}
-            {!canUpload && (
-              <p className="text-gray-600 mt-1">
-                {canLock(role, asset.category)
-                  ? "Bloquéalo para subir una nueva versión."
-                  : "Tu rol no puede subir archivos de este tipo."}
-              </p>
-            )}
-          </div>
-          <div className="flex gap-2 shrink-0">
-            {hasFile && (
-              <button
-                onClick={download}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-[#1C202D] text-gray-200 hover:bg-[#272B3B]"
-              >
-                <Download className="w-4 h-4" /> Descargar
-              </button>
-            )}
-            <input ref={inputRef} type="file" className="hidden" onChange={(e) => upload(e.target.files?.[0])} />
-            <button
-              disabled={!canUpload || uploading}
-              onClick={() => inputRef.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-[#00F0FF]/15 text-[#00F0FF] hover:bg-[#00F0FF]/25 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <FileUp className="w-4 h-4" /> {uploading ? "Subiendo..." : "Subir versión"}
-            </button>
-          </div>
-        </div>
-      )}
-    </section>
-  );
 }
 
 // ---------- Commits de GitHub (solo tareas de código) ----------

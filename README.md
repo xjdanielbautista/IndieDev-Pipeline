@@ -132,6 +132,10 @@ Se definen como variables de entorno (ejemplo en `Backend/.env.example`; el deta
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Duración de la sesión (30 por defecto) |
 | `FRONTEND_URL` | URL del frontend para el enlace de recuperación de contraseña (por defecto, el primer origen de `FRONTEND_ORIGINS`) |
 | `EMAIL_PROVIDER` | Cómo se envían los correos: `console` (solo log, por defecto), `smtp` o `brevo`. Ver `Backend/README.md` |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` para no dejar entrar a quien no confirmó su correo. Por defecto `false`: solo se muestra un aviso |
+| `EMAIL_VERIFICATION_HOURS` | Vigencia del enlace de confirmación (48 por defecto) |
+| `SUPERADMIN_EMAILS` | Correos (separados por comas) con acceso al panel **Plataforma**. Solo cuenta si el correo está confirmado |
+| `PREVIEW_MAX_MB` | Tamaño máximo para la vista previa de archivos (5 por defecto) |
 
 ### Frontend (`Frontend/.env`)
 
@@ -148,15 +152,18 @@ Se crea copiando `Frontend/.env.example`:
 
 ## ✅ Funcionalidades
 
-- **Cuentas y sesión:** registro, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos y recuperación de contraseña por correo.
+- **Cuentas y sesión:** registro con confirmación de correo, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos, recuperación de contraseña por correo, y en **Mi cuenta** cambiar la contraseña o eliminar la cuenta.
 - **Multi-tenant:** cada estudio tiene sus integrantes, proyectos y archivos aislados; un usuario puede pertenecer a varios estudios.
 - **Roles:** dueño, admin, developer, artista y tester, con permisos validados en el backend.
 - **Tablero Kanban:** tareas de código y arte con asignación abierta o restringida, historial de cambios y restauración.
-- **Bloqueo y versiones de archivos:** solo quien bloquea un archivo puede subir una nueva versión; descarga con URL firmada.
+- **Bloqueo y versiones de archivos:** solo quien bloquea un archivo puede subir una nueva versión. Cada subida queda guardada: se puede descargar, ver o restaurar cualquier versión anterior.
+- **Vista previa:** imágenes, código con colores (C#, GDScript, Python, shaders, JSON…), texto, audio, video y PDF dentro de la tarea.
+- **Comparar versiones:** imágenes lado a lado o superpuestas, y código línea por línea con lo agregado y lo quitado.
 - **GitHub:** los commits con `#<id>` en el mensaje aparecen en la tarea (webhook firmado con HMAC).
 - **Comentarios y notificaciones:** avisos al asignar, comentar, pasar a revisión o liberar un bloqueo.
 - **Resumen, Asset Vault y Build History:** avance del proyecto, carga por integrante y registro de builds.
 - **Administración:** editar o eliminar estudio, proyectos y tareas, y bitácora de actividad.
+- **Panel de la plataforma (superadmin):** ver todos los usuarios y estudios y eliminarlos, sin entrar a la base.
 - **Versión para celular.**
 
 ---
@@ -172,8 +179,15 @@ pytest
 ```bash
 cd Frontend
 npm run lint
+npm test
 npm run build
 ```
+
+En GitHub, `.github/workflows/ci.yml` corre todo esto en cada PR y además prueba las migraciones en PostgreSQL.
+
+### Mantener despierto el backend (opcional)
+
+`.github/workflows/keep-alive.yml` visita el backend cada 10 minutos para que Render no lo duerma. Está apagado hasta definir la variable del repositorio `KEEPALIVE_URL` (Settings → Secrets and variables → Actions → Variables), por ejemplo `https://indiedev-backend-pruebas.onrender.com/health`. Render da 750 horas gratis al mes por cuenta: alcanza para **un** servicio siempre despierto. Si la cuenta tiene más, actívalo solo para la demo.
 
 ---
 
