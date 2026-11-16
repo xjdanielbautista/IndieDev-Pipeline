@@ -912,8 +912,11 @@ def update_asset(
         require_manager(membership, "cambiar el tipo o los asignados de una tarea")
     if "status" in changes and changes["status"] is not None:
         require_can_move(membership, asset.category, asset.status, changes["status"].value)
+        # El tester revisa todas las tareas aunque no esté asignado; sus movimientos
+        # ya quedan limitados por TESTER_TRANSITIONS en require_can_move.
         if (
             not is_manager(membership)
+            and membership.role != MemberRole.TESTER
             and asset.assignment_mode == AssetAssignmentMode.RESTRICTED.value
             and current_user.id not in asset.assigned_user_ids
         ):
@@ -1180,6 +1183,11 @@ def upload_asset_file(  # sin async: la subida a S3/Firebase es bloqueante y as�
     except HTTPException:
         raise
     except Exception as error:
+        # Sin este log el 500 no dice nada: casi siempre es configuración del proveedor
+        # (ASSET_STORAGE_PROVIDER, credenciales o bucket) y la causa real queda en los logs.
+        logger.exception(
+            "No se pudo guardar el archivo %s en %s", asset.storage_key, asset.storage_provider
+        )
         raise HTTPException(status_code=500, detail="No se pudo guardar el archivo") from error
 
     uploaded_at = datetime.now(timezone.utc)
@@ -1240,6 +1248,9 @@ def download_asset_file(
     except HTTPException:
         raise
     except Exception as error:
+        logger.exception(
+            "No se pudo descargar el archivo %s de %s", asset.storage_key, asset.storage_provider
+        )
         raise HTTPException(status_code=500, detail="No se pudo descargar el archivo") from error
 
 
