@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowRight, Code, Lock, Mail, User } from "lucide-react";
 import ApiStatus from "./ApiStatus";
-import { confirmPasswordReset, login, register, requestPasswordReset } from "../api/auth";
+import { confirmPasswordReset, login, register, requestPasswordReset, resendVerification } from "../api/auth";
 import { clearResetTokenFromUrl, getResetTokenFromUrl } from "../utils/resetToken";
 
 const inputClasses =
@@ -22,6 +22,7 @@ function Field({ label, icon: Icon, ...inputProps }) {
 export default function LoginScreen({ onLoggedIn, notice }) {
   const [resetToken] = useState(getResetTokenFromUrl);
   // "login" | "register" | "forgot" (pedir enlace) | "reset" (nueva contraseña)
+  // | "resend" (reenviar el correo de confirmación)
   const [mode, setMode] = useState(resetToken ? "reset" : "login");
   const [identifier, setIdentifier] = useState("");
   const [username, setUsername] = useState("");
@@ -31,21 +32,27 @@ export default function LoginScreen({ onLoggedIn, notice }) {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
+  // El backend exige confirmar el correo (REQUIRE_EMAIL_VERIFICATION) y esta cuenta no lo ha hecho.
+  const [needsVerification, setNeedsVerification] = useState(false);
 
   const isRegister = mode === "register";
   const isForgot = mode === "forgot";
   const isReset = mode === "reset";
+  const isResend = mode === "resend";
+  const asksEmailOnly = isForgot || isResend;
 
   const switchMode = (newMode) => {
     setMode(newMode);
     setError("");
     setInfo("");
+    setNeedsVerification(false);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setInfo("");
+    setNeedsVerification(false);
     if (isReset && password !== confirmPassword) {
       setError("Las contraseñas no coinciden");
       return;
@@ -54,6 +61,11 @@ export default function LoginScreen({ onLoggedIn, notice }) {
     try {
       if (isForgot) {
         const data = await requestPasswordReset(email.trim());
+        setInfo(data?.detail || "Revisa tu correo.");
+        return;
+      }
+      if (isResend) {
+        const data = await resendVerification(email.trim());
         setInfo(data?.detail || "Revisa tu correo.");
         return;
       }
@@ -69,7 +81,16 @@ export default function LoginScreen({ onLoggedIn, notice }) {
       if (isRegister) {
         await register({ username: username.trim(), email: email.trim(), password });
         // Tras registrarse, inicia sesión directamente con lo que escribió.
-        await login(username.trim(), password);
+        try {
+          await login(username.trim(), password);
+        } catch (err) {
+          if (err.status !== 403) throw err;
+          setIdentifier(username.trim());
+          setPassword("");
+          setMode("login");
+          setInfo("Cuenta creada. Te enviamos un correo para confirmarla: ábrelo y luego inicia sesión.");
+          return;
+        }
       } else {
         await login(identifier.trim(), password);
       }
@@ -77,6 +98,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
       onLoggedIn();
     } catch (err) {
       setError(err.message);
+      if (err.status === 403 && mode === "login") setNeedsVerification(true);
     } finally {
       setLoading(false);
     }
@@ -108,7 +130,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
               type="button"
               onClick={() => switchMode(id)}
               className={`py-2 text-sm rounded-md transition-colors ${
-                mode === id || (id === "login" && (isForgot || isReset)) ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
+                mode === id || (id === "login" && (asksEmailOnly || isReset)) ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
               }`}
             >
               {label}
@@ -116,11 +138,13 @@ export default function LoginScreen({ onLoggedIn, notice }) {
           ))}
         </div>
 
-        {(isForgot || isReset) && (
+        {(asksEmailOnly || isReset) && (
           <p className="mb-4 text-xs text-gray-400">
             {isForgot
               ? "Escribe el correo de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
-              : "Elige tu nueva contraseña. Al guardarla se cerrarán las sesiones abiertas."}
+              : isResend
+                ? "Escribe el correo de tu cuenta y te enviaremos un enlace nuevo para confirmarlo."
+                : "Elige tu nueva contraseña. Al guardarla se cerrarán las sesiones abiertas."}
           </p>
         )}
 
@@ -133,7 +157,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {isForgot ? (
+          {asksEmailOnly ? (
             <Field
               label="email"
               icon={Mail}
@@ -184,7 +208,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             />
           )}
 
-          {!isForgot && (
+          {!asksEmailOnly && (
             <Field
               label={isReset ? "nueva password" : "password"}
               icon={Lock}
@@ -228,6 +252,18 @@ export default function LoginScreen({ onLoggedIn, notice }) {
           {error && (
             <p className="text-xs text-[#FF3D00] bg-[#FF3D00]/10 border border-[#FF3D00]/30 rounded p-2 whitespace-pre-line">
               {error}
+              {needsVerification && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (identifier.includes("@")) setEmail(identifier.trim());
+                    switchMode("resend");
+                  }}
+                  className="block mt-2 text-[#00F0FF] hover:underline"
+                >
+                  Reenviar el correo de confirmación
+                </button>
+              )}
             </p>
           )}
 
@@ -239,7 +275,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             <span>
               {loading
                 ? "CONECTANDO..."
-                : isForgot
+                : asksEmailOnly
                   ? "ENVIAR ENLACE"
                   : isReset
                     ? "GUARDAR CONTRASEÑA"
@@ -251,7 +287,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
           </button>
         </form>
 
-        {(isForgot || isReset) && (
+        {(asksEmailOnly || isReset) && (
           <div className="mt-4 text-center">
             <button
               type="button"

@@ -13,3 +13,18 @@ export function clearResetTokenFromUrl() {
   url.searchParams.delete("reset_token");
   window.history.replaceState(null, "", url.pathname + url.search + url.hash);
 }
+
+// Parámetros genéricos de la URL (por ejemplo ?verify_token=... del correo de confirmación).
+export function getUrlParam(name) {
+  try {
+    return new URLSearchParams(window.location.search).get(name) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function clearUrlParam(name) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(name);
+  window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+}

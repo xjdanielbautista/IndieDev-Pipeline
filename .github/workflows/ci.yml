@@ -1,0 +1,62 @@
+# Pruebas automáticas en cada PR y en cada push a main/develop.
+# Gratis: GitHub Actions no cobra los minutos en repositorios públicos.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest + migraciones en PostgreSQL)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: indiedev
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: Backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Migraciones en una base vacía (igual que en Render)
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/indiedev
+        run: alembic upgrade head && alembic downgrade 20261112_07 && alembic upgrade head
+      - name: Pruebas
+        run: pytest -q
+
+  frontend:
+    name: Frontend (lint + pruebas + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

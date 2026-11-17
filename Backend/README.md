@@ -277,7 +277,7 @@ Las bases SQLite locales (`*.db`) están excluidas de Git mediante `.gitignore`;
 
 ## Datos de demo multi-tenant
 
-`scripts/seed_demo.py` crea por la API dos estudios de ejemplo (Pixel Forge Studio y Nebula Games), cada uno con integrantes por rol, un proyecto, tareas en el Kanban y un build. Al final comprueba que el dueño de un estudio recibe 403 al pedir datos del otro. Se puede correr varias veces sin duplicar.
+`scripts/seed_demo.py` crea por la API dos estudios de ejemplo (Pixel Forge Studio y Nebula Games), cada uno con integrantes por rol, un proyecto, tareas en el Kanban y un build. También sube archivos reales para la vista previa (sprites PNG y scripts con dos versiones para compararlas, y un `.fbx` sin vista previa) y deja comentarios. Si el almacenamiento falla, lo avisa y sigue con lo demás. Al final comprueba que el dueño de un estudio recibe 403 al pedir datos del otro. Se puede correr varias veces sin duplicar.
 
 ```bash
 python scripts/seed_demo.py                              # backend local
@@ -322,3 +322,45 @@ El correo se envía según `EMAIL_PROVIDER`:
 | `brevo` | `BREVO_API_KEY`, `EMAIL_FROM` | API HTTP de Brevo (plan gratuito: 300 correos al día). `EMAIL_FROM` debe ser un remitente verificado en Brevo. |
 
 En Render conviene `brevo`: los servicios gratuitos de Render bloquean las conexiones SMTP salientes. En Render define también `FRONTEND_URL` con la URL de Vercel.
+
+## Versiones y vista previa de archivos
+
+Cada `POST .../assets/{id}/file` crea una versión nueva (tabla `asset_file_versions`, migración `20261116_08`) guardada en su propia ruta, `.../v<n>/<nombre>`, así que las anteriores no se pierden. Los archivos que ya existían antes de la migración quedan como versión 1.
+
+| Método | Ruta | Qué hace |
+| --- | --- | --- |
+| `GET` | `.../assets/{id}/file` | Descarga la versión actual (archivo o `{ url, expires_at }` firmada) |
+| `GET` | `.../assets/{id}/file/preview` | Contenido de la versión actual para la vista previa (máximo `PREVIEW_MAX_MB`, 413 si es más) |
+| `GET` | `.../assets/{id}/versions` | Lista de versiones, de la más nueva a la más vieja |
+| `GET` | `.../assets/{id}/versions/{version_id}/file` | Descarga una versión |
+| `GET` | `.../assets/{id}/versions/{version_id}/preview` | Vista previa de una versión |
+| `POST` | `.../assets/{id}/versions/{version_id}/restore` | Crea una versión nueva con el contenido de esa (exige el bloqueo, como subir) |
+
+La vista previa la sirve el backend, así funciona con cualquier proveedor sin configurar CORS en el bucket. Va con `X-Content-Type-Options: nosniff` y `Content-Security-Policy: sandbox`, para que un `.html` o `.svg` subido no pueda ejecutar código. Al borrar una tarea, proyecto o estudio se borran todas sus versiones del almacenamiento.
+
+## Confirmación de correo
+
+Al registrarse se envía un enlace `FRONTEND_URL/?verify_token=...` que vence en `EMAIL_VERIFICATION_HOURS`.
+
+- `POST /api/auth/verify-email` con `{ "token": "..." }` → `204`, o `400` si no es válido, ya se usó o venció.
+- `POST /api/auth/verify-email/resend` con `{ "email": "..." }` → siempre `202` con el mismo mensaje. Máximo 3 envíos cada 15 minutos.
+- Usar un enlace de recuperación de contraseña también confirma el correo.
+- `GET /api/auth/me` incluye `email_verified` e `is_superadmin`.
+
+Con `REQUIRE_EMAIL_VERIFICATION=true`, el login responde `403` mientras no se confirme. Las cuentas que ya existían antes de la migración quedan confirmadas.
+
+## Mi cuenta
+
+- `POST /api/auth/password` con `{ "current_password", "new_password" }` → nuevo token. Cierra las demás sesiones.
+- `DELETE /api/auth/me` con `{ "password" }` → `204`. Quita al usuario de todos sus estudios y libera sus bloqueos. Sus comentarios, historial y versiones se conservan sin autor. Responde `409` si es dueño de algún estudio: primero hay que eliminarlo.
+
+## Panel de la plataforma (superadmin)
+
+`SUPERADMIN_EMAILS` lista los correos con acceso. Solo cuenta si el correo está confirmado; si no, alguien podría registrarse antes con ese correo y quedarse con el acceso.
+
+| Método | Ruta | Qué hace |
+| --- | --- | --- |
+| `GET` | `/api/admin/users` | Usuarios con sus estudios y de cuáles son dueños |
+| `GET` | `/api/admin/tenants` | Estudios con dueño y conteo de integrantes, proyectos y tareas |
+| `DELETE` | `/api/admin/users/{id}` | Elimina un usuario (`409` si es dueño de un estudio; no se puede a uno mismo) |
+| `DELETE` | `/api/admin/tenants/{id}` | Elimina un estudio con todos sus datos y archivos |

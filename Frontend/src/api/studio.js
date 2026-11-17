@@ -92,8 +92,8 @@ export function uploadAssetFile(tenantId, projectId, assetId, file) {
   return apiFetch(`${assetPath(tenantId, projectId, assetId)}/file`, { method: "POST", body: form });
 }
 
-// Descarga: con Firebase/S3 el backend responde { url }; con el proveedor local, el archivo directo.
-export async function downloadAssetFile(tenantId, projectId, assetId, fileName) {
+// fetch con token que devuelve la respuesta cruda (para archivos, no JSON).
+async function authedFetch(path) {
   const token = getToken();
   if (!isTokenValid(token)) {
     clearToken();
@@ -102,9 +102,7 @@ export async function downloadAssetFile(tenantId, projectId, assetId, fileName) 
   }
   let response;
   try {
-    response = await fetch(`${API_BASE_URL}${assetPath(tenantId, projectId, assetId)}/file`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    response = await fetch(`${API_BASE_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   } catch {
     throw new ApiError("No se pudo conectar con el backend", 0);
   }
@@ -116,9 +114,13 @@ export async function downloadAssetFile(tenantId, projectId, assetId, fileName) 
     const data = await response.json().catch(() => null);
     throw new ApiError(data?.detail || `Error ${response.status}`, response.status);
   }
-  // Con Firebase/S3 el backend responde JSON { url, expires_at }. Con el proveedor local
-  // responde el archivo tal cual, que también puede ser un .json: por eso se revisa el
-  // contenido y no solo el content-type.
+  return response;
+}
+
+// Con Firebase/S3 el backend responde JSON { url, expires_at }. Con el proveedor local
+// responde el archivo tal cual, que también puede ser un .json: por eso se revisa el
+// contenido y no solo el content-type.
+async function readDownload(response) {
   const blob = await response.blob();
   if ((response.headers.get("content-type") || "").includes("application/json")) {
     const signed = await blob
@@ -126,10 +128,13 @@ export async function downloadAssetFile(tenantId, projectId, assetId, fileName) 
       .then((text) => JSON.parse(text))
       .catch(() => null);
     if (signed && typeof signed.url === "string" && "expires_at" in signed && !response.headers.get("content-disposition")) {
-      window.open(signed.url, "_blank", "noopener");
-      return;
+      return { url: signed.url };
     }
   }
+  return { blob };
+}
+
+function saveBlob(blob, fileName) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = fileName;
@@ -139,6 +144,48 @@ export async function downloadAssetFile(tenantId, projectId, assetId, fileName) 
   // Firefox cancela la descarga si la URL se revoca en el mismo instante.
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
+
+async function download(path, fileName) {
+  const { url, blob } = await readDownload(await authedFetch(path));
+  if (url) window.open(url, "_blank", "noopener");
+  else saveBlob(blob, fileName);
+}
+
+// Descarga la versión actual. versionId opcional para una versión anterior.
+export function downloadAssetFile(tenantId, projectId, assetId, fileName, versionId = null) {
+  const path = versionId
+    ? `${assetPath(tenantId, projectId, assetId)}/versions/${versionId}/file`
+    : `${assetPath(tenantId, projectId, assetId)}/file`;
+  return download(path, fileName);
+}
+
+// Contenido para la vista previa (Blob). El backend lo limita a PREVIEW_MAX_MB (413 si es más).
+export async function fetchAssetPreview(tenantId, projectId, assetId, versionId = null) {
+  const path = versionId
+    ? `${assetPath(tenantId, projectId, assetId)}/versions/${versionId}/preview`
+    : `${assetPath(tenantId, projectId, assetId)}/file/preview`;
+  return (await authedFetch(path)).blob();
+}
+
+// URL para reproducir archivos grandes (video/audio) sin pasar por la vista previa.
+export async function getAssetStreamSource(tenantId, projectId, assetId, versionId = null) {
+  const path = versionId
+    ? `${assetPath(tenantId, projectId, assetId)}/versions/${versionId}/file`
+    : `${assetPath(tenantId, projectId, assetId)}/file`;
+  return readDownload(await authedFetch(path));
+}
+
+export const listAssetVersions = (tenantId, projectId, assetId) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/versions`);
+
+export const restoreAssetVersion = (tenantId, projectId, assetId, versionId) =>
+  apiFetch(`${assetPath(tenantId, projectId, assetId)}/versions/${versionId}/restore`, { method: "POST" });
+
+// Administración de la plataforma (solo superadmin)
+export const adminListUsers = () => apiFetch("/api/admin/users");
+export const adminListTenants = () => apiFetch("/api/admin/tenants");
+export const adminDeleteUser = (userId) => apiFetch(`/api/admin/users/${userId}`, { method: "DELETE" });
+export const adminDeleteTenant = (tenantId) => apiFetch(`/api/admin/tenants/${tenantId}`, { method: "DELETE" });
 
 // Notificaciones
 export const listNotifications = () => apiFetch("/api/notifications?limit=30");
