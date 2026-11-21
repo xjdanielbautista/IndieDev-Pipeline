@@ -66,7 +66,7 @@ export const updateMemberRole = (tenantId, userId, role) =>
 export const removeMember = (tenantId, userId) =>
   apiFetch(`/api/tenants/${tenantId}/members/${userId}`, { method: "DELETE" });
 
-// ---- Funciones pendientes del backend (ver docs/PENDIENTES_BACKEND.md) ----
+// ---- Archivos, commits, comentarios y notificaciones (contratos en docs/PENDIENTES_BACKEND.md) ----
 // Mientras no existan, responden 404 "Not Found" y la interfaz muestra "Próximamente".
 
 const assetPath = (tenantId, projectId, assetId) => `${base(tenantId, projectId)}/assets/${assetId}`;

@@ -269,7 +269,7 @@ El modo `restricted` se sigue aplicando a developers, artistas y testers; dueño
 
 ## Pendiente
 
-Mejoras posibles a futuro: verificación de correo y revocación individual de sesiones. Lo demás ya está implementado: la recuperación de contraseña, el límite de intentos de login, la subida y descarga de archivos (local, Firebase y S3), los webhooks de GitHub, comentarios, notificaciones y la administración del estudio.
+No queda nada pendiente de lo planeado. Está implementado: la recuperación de contraseña, la confirmación de correo, el límite de intentos de login, las sesiones que se pueden cerrar una por una, la subida y descarga de archivos con versiones y vista previa (local, Firebase y S3), los webhooks de GitHub, comentarios, notificaciones, la administración del estudio y el panel de superadmin.
 
 Las migraciones cubren todo el esquema. En una base vacía, `alembic upgrade head` crea todas las tablas de una vez (SQLite, MySQL o PostgreSQL); en una base existente solo agrega lo que falta. Al borrar una tarea, un proyecto o un estudio también se borran sus archivos del almacenamiento.
 
@@ -353,6 +353,19 @@ Con `REQUIRE_EMAIL_VERIFICATION=true`, el login responde `403` mientras no se co
 
 - `POST /api/auth/password` con `{ "current_password", "new_password" }` → nuevo token. Cierra las demás sesiones.
 - `DELETE /api/auth/me` con `{ "password" }` → `204`. Quita al usuario de todos sus estudios y libera sus bloqueos. Sus comentarios, historial y versiones se conservan sin autor. Responde `409` si es dueño de algún estudio: primero hay que eliminarlo.
+
+## Sesiones
+
+Cada login crea una fila en `user_sessions` (migración `20261121_09`) y el token lleva su identificador en el campo `sid`. Cerrar una sesión invalida su token al instante, aunque todavía no venza. Se guardan el navegador (`User-Agent`) y la IP (la primera de `X-Forwarded-For`, porque Render está detrás de un proxy), solo para que el usuario reconozca sus dispositivos.
+
+| Método | Ruta | Qué hace |
+| --- | --- | --- |
+| `GET` | `/api/auth/sessions` | Sesiones abiertas y sin vencer, la más reciente primero. `current: true` marca la del token usado |
+| `DELETE` | `/api/auth/sessions/{id}` | Cierra esa sesión (`404` si no es tuya o ya se cerró) |
+| `DELETE` | `/api/auth/sessions` | Cierra todas menos la actual |
+| `POST` | `/api/auth/logout` | Cierra la sesión actual |
+
+Cambiar o recuperar la contraseña cierra todas las sesiones (cambiarla devuelve un token nuevo para la actual), y eliminar la cuenta las borra. "Última actividad" se actualiza como máximo una vez por minuto. Los tokens emitidos antes de esta versión no traen `sid` y siguen valiendo hasta que vencen (`ACCESS_TOKEN_EXPIRE_MINUTES`).
 
 ## Panel de la plataforma (superadmin)
 

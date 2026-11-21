@@ -35,9 +35,9 @@ El estudio y el proyecto ya no se configuran con variables: se eligen (o se crea
 - **Resumen:** avance del proyecto por columna y por tipo, carga de trabajo pendiente por persona, conteo de builds y listas de tareas sin asignar, en revisión y bloqueadas. Se calcula con los datos que ya carga el tablero.
 - **Celular:** en pantallas chicas el tablero muestra una columna a la vez con un selector arriba, y el encabezado y los filtros se acomodan sin desbordarse.
 
-## Funciones que esperan al backend
+## Funciones que dependen de endpoints opcionales
 
-Las secciones **Archivo**, **Commits** y **Comentarios** del panel de cada tarea, y la **campana de notificaciones**, ya están hechas. Mientras el backend no tenga sus endpoints muestran "Próximamente"; se activan solas cuando existan. Los contratos están en [`docs/PENDIENTES_BACKEND.md`](../docs/PENDIENTES_BACKEND.md). El código está en `src/components/TaskExtras.jsx`, `src/components/NotificationsBell.jsx` y al final de `src/api/studio.js`.
+Las secciones **Archivo**, **Commits** y **Comentarios** del panel de cada tarea, la **campana de notificaciones** y las **sesiones abiertas** de Mi cuenta ya funcionan con el backend actual. Si se conectan a un backend viejo que no tiene el endpoint, muestran "Próximamente" en lugar de un error (ver `isNotImplemented` en `src/api/client.js`). Los contratos originales están en [`docs/PENDIENTES_BACKEND.md`](../docs/PENDIENTES_BACKEND.md). El código está en `src/components/TaskExtras.jsx`, `src/components/NotificationsBell.jsx`, `src/components/AccountPanel.jsx` y al final de `src/api/studio.js`.
 
 ## Autenticación
 
@@ -45,6 +45,7 @@ Las secciones **Archivo**, **Commits** y **Comentarios** del panel de cada tarea
 - **Iniciar sesión** → `POST /api/auth/token` como formulario `application/x-www-form-urlencoded` con los campos `username` y `password`. En `username` se puede escribir el nombre de usuario **o** el correo. Responde `{ access_token, token_type: "bearer" }`.
 - El token se guarda en `localStorage` (`indiedev_token`), así que la sesión se mantiene al recargar la página.
 - El token dura 30 minutos. Cuando vence, o si el backend responde `401`, el frontend borra el token y regresa al login con un aviso.
+- **Cerrar sesión** borra el token y avisa al backend (`POST /api/auth/logout`) para que deje de servir. En **Mi cuenta** se ven las sesiones abiertas (navegador, IP y última actividad) y se pueden cerrar una por una o todas menos la actual.
 
 ### Hacer peticiones autenticadas
 

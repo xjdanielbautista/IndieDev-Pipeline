@@ -1,4 +1,5 @@
-import { apiFetch, clearToken, setToken } from "./client";
+import { API_BASE_URL } from "../config/api";
+import { apiFetch, clearToken, getToken, setToken } from "./client";
 
 // POST /api/auth/register  (JSON)
 // { username, email, password } -> { id, username, email }
@@ -79,6 +80,32 @@ export async function deleteAccount(password) {
   clearToken();
 }
 
+// GET /api/auth/sessions -> [{ id, created_at, last_seen_at, expires_at, user_agent, ip_address, current }]
+export function listSessions() {
+  return apiFetch("/api/auth/sessions");
+}
+
+// DELETE /api/auth/sessions/{id} -> 204. Ese token deja de servir.
+export function revokeSession(sessionId) {
+  return apiFetch(`/api/auth/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+// DELETE /api/auth/sessions -> 204. Cierra todas menos esta.
+export function revokeOtherSessions() {
+  return apiFetch("/api/auth/sessions", { method: "DELETE" });
+}
+
+// Borra el token local y avisa al backend (POST /api/auth/logout) para que deje de
+// servir. No usa apiFetch: un 401 dispararía otra vez el cierre de sesión.
 export function logout() {
+  const token = getToken();
   clearToken();
+  if (!token) return;
+  fetch(`${API_BASE_URL}/api/auth/logout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    keepalive: true,
+  }).catch(() => {
+    // Si no hay conexión, el token vence solo.
+  });
 }

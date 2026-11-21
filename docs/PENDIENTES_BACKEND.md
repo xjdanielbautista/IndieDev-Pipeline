@@ -1,8 +1,8 @@
-# Pendientes del backend
+# Especificación de las funciones del backend (ya implementadas)
 
-Este documento describe lo que falta implementar en el backend, con los endpoints y formatos exactos que **el frontend ya espera**. El frontend ya tiene las pantallas listas: mientras un endpoint no exista muestran "Próximamente", y se activan solas en cuanto el endpoint responde.
+> **Todo lo de este documento ya está implementado** (ver el [checklist](#checklist)). Se conserva como referencia de los contratos entre frontend y backend. La documentación al día de cada endpoint está en [`Backend/README.md`](../Backend/README.md).
 
-Cada sección se puede trabajar por separado. Sugerencia: una persona por sección, una rama por sección y un Pull Request al terminar.
+Este documento describía lo que faltaba implementar en el backend, con los endpoints y formatos exactos que el frontend espera. El frontend muestra "Próximamente" mientras un endpoint no existe y se activa solo en cuanto responde; ese mecanismo se sigue usando para funciones nuevas.
 
 ## Cómo detecta el frontend que algo ya está implementado
 
