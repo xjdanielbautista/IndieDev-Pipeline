@@ -339,3 +339,25 @@ class AssetFileVersion(Base):
     restored_from_version: Mapped[int | None] = mapped_column(nullable=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     uploaded_by: Mapped[User | None] = relationship(foreign_keys=[uploaded_by_user_id])
+
+
+class UserSession(Base):
+    """Un inicio de sesión. El token lleva su `session_key` en el campo `sid`.
+
+    Cerrar una sesión (revoked_at) invalida su token aunque todavía no venza.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", name="fk_user_sessions_user_id_users", ondelete="CASCADE"),
+        index=True,
+    )
+    session_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)

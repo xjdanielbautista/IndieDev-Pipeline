@@ -30,6 +30,7 @@ from .models import (
     EmailVerificationToken,
     MemberRole,
     LoginThrottle,
+    UserSession,
     Membership,
     Notification,
     PasswordResetToken,
@@ -41,6 +42,7 @@ from .models import (
     User,
 )
 from .schemas import (
+    SessionRead,
     AssetCommitRead,
     AssetCommentCreate,
     AssetCommentRead,
@@ -90,9 +92,9 @@ from .permissions import (
     require_manager,
 )
 from .security import (
-    create_access_token,
     get_current_user,
     hash_password,
+    start_session,
     validate_secret_key,
     verify_password,
 )
@@ -388,6 +390,7 @@ def register_user(payload: UserRegister, background_tasks: BackgroundTasks, db: 
 
 @app.post("/api/auth/token", response_model=Token)
 def login_for_access_token(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
@@ -423,7 +426,7 @@ def login_for_access_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Confirma tu correo para entrar. Revisa tu bandeja o pide un enlace nuevo.",
         )
-    return Token(access_token=create_access_token(user.id))
+    return Token(access_token=start_session(db, user, request))
 
 
 def current_user_read(user: User) -> CurrentUserRead:
@@ -537,6 +540,7 @@ def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(
         )
     user.password_hash = hash_password(payload.new_password)
     user.password_changed_at = now
+    revoke_sessions(db, user.id)
     # Abrir el enlace del correo también demuestra que el correo es suyo.
     if user.email_verified_at is None:
         user.email_verified_at = now
@@ -637,6 +641,7 @@ def resend_verification_email(
 @app.post("/api/auth/password", response_model=Token)
 def change_password(
     payload: PasswordChange,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -647,8 +652,101 @@ def change_password(
         raise HTTPException(status_code=400, detail="La contraseña nueva debe ser distinta a la actual")
     current_user.password_hash = hash_password(payload.new_password)
     current_user.password_changed_at = utcnow()
+    revoke_sessions(db, current_user.id)
     db.commit()
-    return Token(access_token=create_access_token(current_user.id))
+    return Token(access_token=start_session(db, current_user, request))
+
+
+# ---------- Sesiones ----------
+def revoke_sessions(db: Session, user_id: int, keep_id: int | None = None) -> None:
+    """Cierra las sesiones abiertas del usuario (menos `keep_id`). No hace commit."""
+    query = update(UserSession).where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
+    if keep_id is not None:
+        query = query.where(UserSession.id != keep_id)
+    db.execute(query.values(revoked_at=utcnow()))
+
+
+@app.get("/api/auth/sessions", response_model=list[SessionRead])
+def list_my_sessions(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sesiones abiertas del usuario, la más reciente primero. `current` marca esta."""
+    sessions = db.scalars(
+        select(UserSession)
+        .where(
+            UserSession.user_id == current_user.id,
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > utcnow(),
+        )
+        .order_by(UserSession.last_seen_at.desc(), UserSession.id.desc())
+    ).all()
+    current_id = getattr(request.state, "session_id", None)
+    return [
+        SessionRead(
+            id=item.id,
+            created_at=item.created_at,
+            last_seen_at=item.last_seen_at,
+            expires_at=item.expires_at,
+            user_agent=item.user_agent,
+            ip_address=item.ip_address,
+            current=item.id == current_id,
+        )
+        for item in sessions
+    ]
+
+
+@app.delete("/api/auth/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_my_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    closed = db.execute(
+        update(UserSession)
+        .where(
+            UserSession.id == session_id,
+            UserSession.user_id == current_user.id,
+            UserSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=utcnow())
+    ).rowcount
+    if closed != 1:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="La sesión no existe o ya se cerró")
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.delete("/api/auth/sessions", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_other_sessions(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cierra todas las sesiones menos la actual."""
+    revoke_sessions(db, current_user.id, keep_id=getattr(request.state, "session_id", None))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cierra la sesión de este token. El token deja de servir aunque no haya vencido."""
+    session_id = getattr(request.state, "session_id", None)
+    if session_id is not None:
+        db.execute(
+            update(UserSession)
+            .where(UserSession.id == session_id, UserSession.user_id == current_user.id)
+            .values(revoked_at=utcnow())
+        )
+        db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def delete_user_account(db: Session, user: User) -> None:
@@ -679,7 +777,7 @@ def delete_user_account(db: Session, user: User) -> None:
         .where(AssetFileVersion.uploaded_by_user_id == user.id)
         .values(uploaded_by_user_id=None)
     )
-    for model in (AssetAssignment, Membership, Notification, PasswordResetToken, EmailVerificationToken):
+    for model in (AssetAssignment, Membership, Notification, PasswordResetToken, EmailVerificationToken, UserSession):
         db.execute(delete(model).where(model.user_id == user.id))
     identifiers = [value.lower() for value in (user.username, user.email) if value]
     db.execute(delete(LoginThrottle).where(LoginThrottle.identifier.in_(identifiers)))

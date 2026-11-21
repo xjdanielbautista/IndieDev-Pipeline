@@ -106,6 +106,16 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class SessionRead(BaseModel):
+    id: int
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    user_agent: str | None = None
+    ip_address: str | None = None
+    current: bool = False
+
+
 class TenantRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

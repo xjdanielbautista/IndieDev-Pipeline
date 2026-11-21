@@ -1,7 +1,17 @@
-// "Mi cuenta": estado del correo, cambiar contraseña y eliminar la cuenta.
-import { useState } from "react";
-import { AlertTriangle, CheckCircle2, KeyRound, MailWarning, Trash2 } from "lucide-react";
-import { changePassword, deleteAccount, resendVerification } from "../api/auth";
+// "Mi cuenta": estado del correo, cambiar contraseña, sesiones abiertas y eliminar la cuenta.
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, KeyRound, Laptop, MailWarning, MonitorSmartphone, Smartphone, Trash2 } from "lucide-react";
+import {
+  changePassword,
+  deleteAccount,
+  listSessions,
+  resendVerification,
+  revokeOtherSessions,
+  revokeSession,
+} from "../api/auth";
+import { isNotImplemented } from "../api/client";
+import { describeDevice, isMobileDevice } from "../utils/device";
+import { formatDateTime, timeAgo } from "../utils/labels";
 import { GhostButton, Label, PrimaryButton, inputClass, useToast } from "./ui";
 
 // Aviso fijo para quien no ha confirmado su correo.
@@ -35,7 +45,101 @@ export function VerifyEmailBanner({ user }) {
   );
 }
 
-function ChangePasswordForm() {
+function SessionsList({ reloadKey }) {
+  const notify = useToast();
+  const [sessions, setSessions] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(null);
+
+  const load = useCallback(() => {
+    listSessions()
+      .then((items) => {
+        setSessions(items);
+        setError("");
+      })
+      .catch((err) => setError(isNotImplemented(err) ? "Próximamente" : err.message));
+  }, []);
+
+  useEffect(load, [load, reloadKey]);
+
+  const close = async (session) => {
+    setBusy(session.id);
+    try {
+      await revokeSession(session.id);
+      setSessions((items) => items.filter((item) => item.id !== session.id));
+      notify("Sesión cerrada", "success");
+    } catch (err) {
+      if (err.status !== 401) notify(err.message);
+      load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const closeOthers = async () => {
+    setBusy("others");
+    try {
+      await revokeOtherSessions();
+      setSessions((items) => items.filter((item) => item.current));
+      notify("Se cerraron las demás sesiones", "success");
+    } catch (err) {
+      if (err.status !== 401) notify(err.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (error) return <p className="text-xs text-gray-500">{error}</p>;
+  if (!sessions) return <p className="text-xs text-gray-500">Cargando...</p>;
+  const others = sessions.filter((item) => !item.current).length;
+
+  return (
+    <div className="space-y-2">
+      <ul className="space-y-2">
+        {sessions.map((session) => {
+          const Icon = isMobileDevice(session.user_agent) ? Smartphone : Laptop;
+          return (
+            <li
+              key={session.id}
+              className="flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-sm"
+            >
+              <Icon className="w-4 h-4 text-gray-400 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-white truncate">
+                  {describeDevice(session.user_agent)}
+                  {session.current && <span className="ml-2 text-[11px] text-[#00FF66]">esta sesión</span>}
+                </p>
+                <p className="text-[11px] text-gray-500 truncate" title={`Inició ${formatDateTime(session.created_at)}`}>
+                  {session.ip_address ? `${session.ip_address} · ` : ""}
+                  activa {timeAgo(session.last_seen_at)}
+                </p>
+              </div>
+              {!session.current && (
+                <button
+                  onClick={() => close(session)}
+                  disabled={busy !== null}
+                  className="text-xs text-[#FF3D00] hover:underline disabled:opacity-40"
+                >
+                  {busy === session.id ? "Cerrando..." : "Cerrar"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {others > 0 && (
+        <GhostButton onClick={closeOthers} disabled={busy !== null}>
+          {busy === "others" ? "Cerrando..." : `Cerrar las otras ${others}`}
+        </GhostButton>
+      )}
+      {sessions.length === 1 && sessions[0].current && (
+        <p className="text-[11px] text-gray-500">No tienes otras sesiones abiertas.</p>
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordForm({ onChanged }) {
   const notify = useToast();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -54,6 +158,7 @@ function ChangePasswordForm() {
       setCurrent("");
       setNext("");
       setConfirm("");
+      onChanged?.();
       notify("Contraseña actualizada. Las demás sesiones se cerraron.", "success");
     } catch (err) {
       if (err.status !== 401) notify(err.message);
@@ -177,6 +282,7 @@ function DeleteAccountForm({ user, onDeleted }) {
 
 export default function AccountPanel({ user, onDeleted }) {
   const notify = useToast();
+  const [sessionsKey, setSessionsKey] = useState(0);
   const resend = async () => {
     try {
       await resendVerification(user.email);
@@ -206,7 +312,13 @@ export default function AccountPanel({ user, onDeleted }) {
         <h4 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
           <KeyRound className="w-4 h-4 text-gray-400" /> Cambiar contraseña
         </h4>
-        <ChangePasswordForm />
+        <ChangePasswordForm onChanged={() => setSessionsKey((key) => key + 1)} />
+      </section>
+      <section>
+        <h4 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
+          <MonitorSmartphone className="w-4 h-4 text-gray-400" /> Sesiones abiertas
+        </h4>
+        <SessionsList reloadKey={sessionsKey} />
       </section>
       <section>
         <h4 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
