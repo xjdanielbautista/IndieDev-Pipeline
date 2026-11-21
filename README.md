@@ -46,7 +46,7 @@ IndieDev-Pipeline/
 ├── Frontend/             # Interfaz de usuario (React + Vite + Tailwind)
 ├── Backend/              # API REST y modelos de datos (FastAPI)
 ├── docs/
-│   └── PENDIENTES_BACKEND.md  # Funciones pendientes con su especificación
+│   └── PENDIENTES_BACKEND.md  # Especificación original de las funciones (ya implementadas)
 └── README.md             # Documentación principal del proyecto
 ```
 
@@ -152,7 +152,7 @@ Se crea copiando `Frontend/.env.example`:
 
 ## ✅ Funcionalidades
 
-- **Cuentas y sesión:** registro con confirmación de correo, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos, recuperación de contraseña por correo, y en **Mi cuenta** cambiar la contraseña o eliminar la cuenta.
+- **Cuentas y sesión:** registro con confirmación de correo, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos, recuperación de contraseña por correo, y en **Mi cuenta** cambiar la contraseña, ver las sesiones abiertas y cerrarlas una por una, o eliminar la cuenta.
 - **Multi-tenant:** cada estudio tiene sus integrantes, proyectos y archivos aislados; un usuario puede pertenecer a varios estudios.
 - **Roles:** dueño, admin, developer, artista y tester, con permisos validados en el backend.
 - **Tablero Kanban:** tareas de código y arte con asignación abierta o restringida, historial de cambios y restauración.
