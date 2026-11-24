@@ -58,7 +58,13 @@ export function verifyEmail(token) {
   return apiFetch("/api/auth/verify-email", { method: "POST", auth: false, body: { token } });
 }
 
-// POST /api/auth/verify-email/resend -> { detail }. Responde lo mismo exista o no la cuenta.
+// POST /api/auth/verify-email/code -> 204. Código de 6 dígitos que llega por correo.
+export function verifyEmailCode(email, code) {
+  return apiFetch("/api/auth/verify-email/code", { method: "POST", auth: false, body: { email, code } });
+}
+
+// POST /api/auth/verify-email/resend -> { detail }. Manda un código nuevo (y el enlace).
+// Responde lo mismo exista o no la cuenta.
 export function resendVerification(email) {
   return apiFetch("/api/auth/verify-email/resend", { method: "POST", auth: false, body: { email } });
 }

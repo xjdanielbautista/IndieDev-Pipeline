@@ -133,6 +133,7 @@ Se definen como variables de entorno (ejemplo en `Backend/.env.example`; el deta
 | `FRONTEND_URL` | URL del frontend para el enlace de recuperación de contraseña (por defecto, el primer origen de `FRONTEND_ORIGINS`) |
 | `EMAIL_PROVIDER` | Cómo se envían los correos: `console` (solo log, por defecto), `smtp` o `brevo`. Ver `Backend/README.md` |
 | `REQUIRE_EMAIL_VERIFICATION` | `true` para no dejar entrar a quien no confirmó su correo. Por defecto `false`: solo se muestra un aviso |
+| `EMAIL_CODE_MINUTES` | Vigencia del código de verificación de 6 dígitos (30 por defecto) |
 | `EMAIL_VERIFICATION_HOURS` | Vigencia del enlace de confirmación (48 por defecto) |
 | `SUPERADMIN_EMAILS` | Correos (separados por comas) con acceso al panel **Plataforma**. Solo cuenta si el correo está confirmado |
 | `PREVIEW_MAX_MB` | Tamaño máximo para la vista previa de archivos (5 por defecto) |
@@ -152,7 +153,7 @@ Se crea copiando `Frontend/.env.example`:
 
 ## ✅ Funcionalidades
 
-- **Cuentas y sesión:** registro con confirmación de correo, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos, recuperación de contraseña por correo, y en **Mi cuenta** cambiar la contraseña, ver las sesiones abiertas y cerrarlas una por una, o eliminar la cuenta.
+- **Cuentas y sesión:** registro con código de verificación de 6 dígitos enviado al correo, inicio de sesión con token JWT, bloqueo temporal tras 5 intentos fallidos, recuperación de contraseña por correo, y en **Mi cuenta** cambiar la contraseña, ver las sesiones abiertas y cerrarlas una por una, o eliminar la cuenta.
 - **Multi-tenant:** cada estudio tiene sus integrantes, proyectos y archivos aislados; un usuario puede pertenecer a varios estudios.
 - **Roles:** dueño, admin, developer, artista y tester, con permisos validados en el backend.
 - **Tablero Kanban:** tareas de código y arte con asignación abierta o restringida, historial de cambios y restauración.

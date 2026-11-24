@@ -299,7 +299,7 @@ class PasswordResetToken(Base):
 
 
 class EmailVerificationToken(Base):
-    """Enlace para confirmar el correo. Igual que en la recuperación, solo se guarda el SHA-256."""
+    """Enlace y código de 6 dígitos para confirmar el correo. Solo se guardan sus SHA-256."""
 
     __tablename__ = "email_verification_tokens"
 
@@ -309,6 +309,10 @@ class EmailVerificationToken(Base):
         index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # Código que se escribe en la app. Vence antes que el enlace y se anula tras varios intentos fallidos.
+    code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failed_attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

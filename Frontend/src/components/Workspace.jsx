@@ -93,7 +93,7 @@ function Onboarding({ step, tenant, onStudio, onProject, onLogout }) {
   );
 }
 
-export default function Workspace({ currentUser, onLogout }) {
+export default function Workspace({ currentUser, onLogout, onEmailVerified }) {
   const notify = useToast();
   const [tenants, setTenants] = useState(null);
   const [tenantId, setTenantId] = useState(() => store.get("indiedev_tenant"));
@@ -245,28 +245,34 @@ export default function Workspace({ currentUser, onLogout }) {
 
   if (!tenant) {
     return (
-      <Onboarding
-        step="studio"
-        onLogout={onLogout}
-        onStudio={(created) => {
-          setTenants([{ ...created, role: "owner" }]);
-          setTenantId(created.id);
-        }}
-      />
+      <>
+        <VerifyEmailBanner user={currentUser} onVerified={onEmailVerified} />
+        <Onboarding
+          step="studio"
+          onLogout={onLogout}
+          onStudio={(created) => {
+            setTenants([{ ...created, role: "owner" }]);
+            setTenantId(created.id);
+          }}
+        />
+      </>
     );
   }
 
   if (!project) {
     return (
-      <Onboarding
-        step="project"
-        tenant={tenant}
-        onLogout={onLogout}
-        onProject={(created) => {
-          setProjects([created]);
-          setProjectId(created.id);
-        }}
-      />
+      <>
+        <VerifyEmailBanner user={currentUser} onVerified={onEmailVerified} />
+        <Onboarding
+          step="project"
+          tenant={tenant}
+          onLogout={onLogout}
+          onProject={(created) => {
+            setProjects([created]);
+            setProjectId(created.id);
+          }}
+        />
+      </>
     );
   }
 
@@ -371,7 +377,7 @@ export default function Workspace({ currentUser, onLogout }) {
         </div>
       </header>
 
-      <VerifyEmailBanner user={currentUser} />
+      <VerifyEmailBanner user={currentUser} onVerified={onEmailVerified} />
 
       <div className="bg-[#0B0D14] border-b border-[#272B3B] flex flex-wrap items-center justify-between gap-3 px-4 md:px-6 py-2 shrink-0">
         <nav className="flex gap-1 overflow-x-auto max-w-full -mx-1 px-1">
