@@ -7,6 +7,9 @@ EMAIL_PROVIDER elige cómo se envían:
   Variables: SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASSWORD, EMAIL_FROM.
 - brevo: API HTTP de Brevo. Variables: BREVO_API_KEY, EMAIL_FROM.
   Útil en hostings que bloquean los puertos SMTP, como el plan gratuito de Render.
+- apps_script: un Web App de Google Apps Script que envía con GmailApp desde la
+  cuenta de Gmail dueña del script. Va por HTTPS, así que funciona en el plan
+  gratuito de Render. Variables: APPS_SCRIPT_URL, APPS_SCRIPT_SECRET.
 """
 
 import json
@@ -65,6 +68,26 @@ def _send_brevo(to: str, subject: str, text: str) -> None:
         response.read()
 
 
+def _send_apps_script(to: str, subject: str, text: str) -> None:
+    body = json.dumps({
+        "secret": os.environ["APPS_SCRIPT_SECRET"],
+        "to": to,
+        "subject": subject,
+        "text": text,
+    }).encode()
+    request = urllib.request.Request(
+        os.environ["APPS_SCRIPT_URL"],
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    # Google responde con una redirección; urllib la sigue con GET y ahí viene el resultado.
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.loads(response.read().decode() or "{}")
+    if not result.get("ok"):
+        raise RuntimeError(f"Apps Script no envió el correo: {result.get('error', 'sin detalle')}")
+
+
 def send_email(to: str, subject: str, text: str) -> None:
     """Envía un correo. Nunca lanza excepciones: los errores solo se registran.
 
@@ -77,6 +100,8 @@ def send_email(to: str, subject: str, text: str) -> None:
             _send_smtp(to, subject, text)
         elif provider == "brevo":
             _send_brevo(to, subject, text)
+        elif provider == "apps_script":
+            _send_apps_script(to, subject, text)
         else:
             logger.warning("EMAIL_PROVIDER=console. Correo para %s: %s\n%s", to, subject, text)
     except Exception:  # noqa: BLE001
