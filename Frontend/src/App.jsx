@@ -125,7 +125,11 @@ export default function App() {
           )}
         </div>
       ) : (
-        <Workspace currentUser={currentUser} onLogout={(notice) => handleLogout(notice)} />
+        <Workspace
+          currentUser={currentUser}
+          onLogout={(notice) => handleLogout(notice)}
+          onEmailVerified={() => setCurrentUser((user) => (user ? { ...user, email_verified: true } : user))}
+        />
       )}
     </ToastProvider>
   );

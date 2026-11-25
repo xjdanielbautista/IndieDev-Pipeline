@@ -340,10 +340,11 @@ La vista previa la sirve el backend, así funciona con cualquier proveedor sin c
 
 ## Confirmación de correo
 
-Al registrarse se envía un enlace `FRONTEND_URL/?verify_token=...` que vence en `EMAIL_VERIFICATION_HOURS`.
+Al registrarse se envía un correo con un **código de verificación de 6 dígitos** (también va en el asunto) y, como alternativa, un enlace `FRONTEND_URL/?verify_token=...`. Justo después de crear la cuenta, la app pide el código; también se puede escribir en el aviso amarillo de la app o desde el login.
 
-- `POST /api/auth/verify-email` con `{ "token": "..." }` → `204`, o `400` si no es válido, ya se usó o venció.
-- `POST /api/auth/verify-email/resend` con `{ "email": "..." }` → siempre `202` con el mismo mensaje. Máximo 3 envíos cada 15 minutos.
+- `POST /api/auth/verify-email/code` con `{ "email": "...", "code": "123456" }` → `204`. `400` si el código no es correcto o venció; `429` al quinto intento fallido, y entonces hay que pedir otro. El código vence en `EMAIL_CODE_MINUTES` (30) y solo vale el más reciente. Se guarda como HMAC con `SECRET_KEY`, nunca en texto plano.
+- `POST /api/auth/verify-email` con `{ "token": "..." }` → `204`, o `400` si no es válido, ya se usó o venció. El enlace vence en `EMAIL_VERIFICATION_HOURS` (48).
+- `POST /api/auth/verify-email/resend` con `{ "email": "..." }` → siempre `202` con el mismo mensaje; manda un código y un enlace nuevos. Máximo 3 envíos cada 15 minutos.
 - Usar un enlace de recuperación de contraseña también confirma el correo.
 - `GET /api/auth/me` incluye `email_verified` e `is_superadmin`.
 

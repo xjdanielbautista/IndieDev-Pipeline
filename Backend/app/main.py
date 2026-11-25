@@ -57,6 +57,7 @@ from .schemas import (
     AdminUserRead,
     BuildCreate,
     CurrentUserRead,
+    EmailVerificationCode,
     EmailVerificationConfirm,
     BuildRead,
     MemberAdd,
@@ -91,6 +92,7 @@ from .permissions import (
     require_can_move,
     require_manager,
 )
+from . import security
 from .security import (
     get_current_user,
     hash_password,
@@ -424,7 +426,7 @@ def login_for_access_token(
     if email_verification_required() and user.email_verified_at is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Confirma tu correo para entrar. Revisa tu bandeja o pide un enlace nuevo.",
+            detail="Confirma tu correo para entrar: escribe el código que te enviamos o pide uno nuevo.",
         )
     return Token(access_token=start_session(db, user, request))
 
@@ -553,9 +555,20 @@ def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(
 
 # ---------- Confirmación de correo ----------
 EMAIL_VERIFICATION_HOURS = int(os.getenv("EMAIL_VERIFICATION_HOURS", "48"))
+EMAIL_CODE_MINUTES = int(os.getenv("EMAIL_CODE_MINUTES", "30"))
 MAX_VERIFICATION_EMAILS = 3  # por usuario cada 15 minutos
-VERIFICATION_SENT_MESSAGE = "Si la cuenta existe y no está confirmada, te enviamos un enlace nuevo."
+MAX_CODE_ATTEMPTS = 5  # intentos fallidos por código; después hay que pedir otro
+VERIFICATION_SENT_MESSAGE = "Si la cuenta existe y no está confirmada, te enviamos un código nuevo."
 INVALID_VERIFICATION = "El enlace de confirmación no es válido o ya expiró. Pide uno nuevo."
+INVALID_CODE = "El código no es correcto o ya venció. Revisa el correo más reciente o pide uno nuevo."
+TOO_MANY_CODE_ATTEMPTS = "Demasiados intentos con ese código. Pide uno nuevo."
+
+
+def hash_verification_code(user_id: int, code: str) -> str:
+    """HMAC del código con SECRET_KEY: con solo 6 dígitos, un SHA-256 simple se adivinaría
+    probando el millón de combinaciones si alguien obtuviera la base de datos."""
+    key = security._secret_key().encode()
+    return hmac.new(key, f"{user_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
 
 def email_verification_required() -> bool:
@@ -579,9 +592,19 @@ def queue_verification_email(db: Session, user: User, background_tasks: Backgrou
         db.commit()
         return
     token = secrets.token_urlsafe(32)
+    code = f"{secrets.randbelow(10**6):06d}"
+    # Solo vale el código más reciente; los enlaces anteriores siguen sirviendo hasta vencer.
+    db.execute(
+        update(EmailVerificationToken)
+        .where(EmailVerificationToken.user_id == user.id, EmailVerificationToken.code_hash.is_not(None))
+        .values(code_hash=None)
+    )
     db.add(EmailVerificationToken(
         user_id=user.id,
         token_hash=hash_reset_token(token),
+        code_hash=hash_verification_code(user.id, code),
+        code_expires_at=now + timedelta(minutes=EMAIL_CODE_MINUTES),
+        failed_attempts=0,
         created_at=now,
         expires_at=now + timedelta(hours=EMAIL_VERIFICATION_HOURS),
     ))
@@ -590,9 +613,12 @@ def queue_verification_email(db: Session, user: User, background_tasks: Backgrou
     background_tasks.add_task(
         send_email,
         user.email,
-        "Confirma tu correo de IndieDev Pipeline",
+        f"{code} es tu código de IndieDev Pipeline",
         f"Hola {display_name(user)}:\n\n"
-        f"Abre este enlace para confirmar tu correo (vence en {EMAIL_VERIFICATION_HOURS} horas):\n\n"
+        f"Tu código de verificación es:\n\n"
+        f"    {code}\n\n"
+        f"Escríbelo en IndieDev Pipeline para confirmar tu correo. Vence en {EMAIL_CODE_MINUTES} minutos.\n\n"
+        f"También puedes confirmar abriendo este enlace (vence en {EMAIL_VERIFICATION_HOURS} horas):\n"
         f"{link}\n\n"
         "Si no creaste una cuenta en IndieDev Pipeline, ignora este correo.",
     )
@@ -623,13 +649,66 @@ def confirm_email(payload: EmailVerificationConfirm, db: Session = Depends(get_d
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@app.post("/api/auth/verify-email/code", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_email_code(payload: EmailVerificationCode, db: Session = Depends(get_db)):
+    """Confirma el correo con el código de 6 dígitos que llegó por correo."""
+    now = utcnow()
+    user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
+    if user is None:
+        raise HTTPException(status_code=400, detail=INVALID_CODE)
+    if user.email_verified_at is not None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    record = db.scalar(
+        select(EmailVerificationToken)
+        .where(
+            EmailVerificationToken.user_id == user.id,
+            EmailVerificationToken.code_hash.is_not(None),
+            EmailVerificationToken.used_at.is_(None),
+        )
+        .order_by(EmailVerificationToken.created_at.desc(), EmailVerificationToken.id.desc())
+    )
+    if record is None or record.code_expires_at is None or record.code_expires_at <= now:
+        raise HTTPException(status_code=400, detail=INVALID_CODE)
+    if not hmac.compare_digest(record.code_hash, hash_verification_code(user.id, payload.code)):
+        # Suma el intento en la base (no en memoria) para que dos peticiones a la vez cuenten las dos.
+        db.execute(
+            update(EmailVerificationToken)
+            .where(EmailVerificationToken.id == record.id)
+            .values(failed_attempts=EmailVerificationToken.failed_attempts + 1)
+        )
+        db.execute(
+            update(EmailVerificationToken)
+            .where(
+                EmailVerificationToken.id == record.id,
+                EmailVerificationToken.failed_attempts >= MAX_CODE_ATTEMPTS,
+            )
+            .values(code_hash=None)
+        )
+        db.commit()
+        db.refresh(record)
+        if record.code_hash is None:
+            raise HTTPException(status_code=429, detail=TOO_MANY_CODE_ATTEMPTS)
+        raise HTTPException(status_code=400, detail=INVALID_CODE)
+    claimed = db.execute(
+        update(EmailVerificationToken)
+        .where(EmailVerificationToken.id == record.id, EmailVerificationToken.used_at.is_(None))
+        .values(used_at=now, code_hash=None)
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=INVALID_CODE)
+    user.email_verified_at = now
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/api/auth/verify-email/resend", status_code=status.HTTP_202_ACCEPTED)
 def resend_verification_email(
     payload: PasswordResetRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Reenvía el enlace. Responde lo mismo exista o no la cuenta."""
+    """Reenvía el código (y el enlace). Responde lo mismo exista o no la cuenta."""
     email = payload.email.strip().lower()
     user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is not None:

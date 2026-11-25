@@ -7,6 +7,7 @@ import {
   listSessions,
   resendVerification,
   revokeOtherSessions,
+  verifyEmailCode,
   revokeSession,
 } from "../api/auth";
 import { isNotImplemented } from "../api/client";
@@ -14,29 +15,64 @@ import { describeDevice, isMobileDevice } from "../utils/device";
 import { formatDateTime, timeAgo } from "../utils/labels";
 import { GhostButton, Label, PrimaryButton, inputClass, useToast } from "./ui";
 
-// Aviso fijo para quien no ha confirmado su correo.
-export function VerifyEmailBanner({ user }) {
+// Aviso fijo para quien no ha confirmado su correo: se escribe ahí mismo el código del correo.
+export function VerifyEmailBanner({ user, onVerified }) {
   const notify = useToast();
   const [sending, setSending] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [code, setCode] = useState("");
   const [hidden, setHidden] = useState(false);
   if (!user || user.email_verified || hidden) return null;
   const resend = async () => {
     setSending(true);
     try {
       await resendVerification(user.email);
-      notify(`Te enviamos un enlace a ${user.email}`, "success");
+      setCode("");
+      notify(`Te enviamos un código nuevo a ${user.email}`, "success");
     } catch (err) {
       notify(err.message);
     } finally {
       setSending(false);
     }
   };
+  const confirm = async (e) => {
+    e.preventDefault();
+    setChecking(true);
+    try {
+      await verifyEmailCode(user.email, code);
+      notify("Tu correo quedó confirmado", "success");
+      onVerified?.();
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setChecking(false);
+    }
+  };
   return (
-    <div className="bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-300 text-xs px-4 md:px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+    <div className="bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-300 text-xs px-4 md:px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-2">
       <MailWarning className="w-4 h-4 shrink-0" />
-      <span>Confirma tu correo ({user.email}) con el enlace que te enviamos.</span>
+      <span>Confirma tu correo ({user.email}) con el código de 6 dígitos que te enviamos.</span>
+      <form onSubmit={confirm} className="flex items-center gap-2">
+        <input
+          id="banner-verify-code"
+          aria-label="Código de verificación"
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="000000"
+          className="w-24 bg-[#0B0D14] border border-yellow-500/40 rounded px-2 py-1 font-mono tracking-widest text-white focus:outline-none focus:border-[#00F0FF]"
+        />
+        <button
+          type="submit"
+          disabled={checking || code.length !== 6}
+          className="px-2 py-1 rounded bg-yellow-400 text-black font-semibold disabled:opacity-50"
+        >
+          {checking ? "..." : "Confirmar"}
+        </button>
+      </form>
       <button onClick={resend} disabled={sending} className="underline hover:text-white disabled:opacity-50">
-        {sending ? "Enviando..." : "Reenviar enlace"}
+        {sending ? "Enviando..." : "Reenviar código"}
       </button>
       <button onClick={() => setHidden(true)} className="ml-auto text-yellow-500/70 hover:text-white" aria-label="Ocultar aviso">
         ✕
@@ -286,7 +322,7 @@ export default function AccountPanel({ user, onDeleted }) {
   const resend = async () => {
     try {
       await resendVerification(user.email);
-      notify(`Te enviamos un enlace a ${user.email}`, "success");
+      notify(`Te enviamos un código a ${user.email}`, "success");
     } catch (err) {
       notify(err.message);
     }
@@ -303,7 +339,7 @@ export default function AccountPanel({ user, onDeleted }) {
             </span>
           ) : (
             <button onClick={resend} className="text-[11px] text-yellow-400 underline hover:text-white">
-              sin confirmar · reenviar enlace
+              sin confirmar · reenviar código
             </button>
           )}
         </p>

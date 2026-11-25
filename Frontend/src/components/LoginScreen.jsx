@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { ArrowRight, Code, Lock, Mail, User } from "lucide-react";
+import { ArrowRight, Code, KeyRound, Lock, Mail, User } from "lucide-react";
 import ApiStatus from "./ApiStatus";
-import { confirmPasswordReset, login, register, requestPasswordReset, resendVerification } from "../api/auth";
+import { confirmPasswordReset, login, register, requestPasswordReset, resendVerification, verifyEmailCode } from "../api/auth";
 import { clearResetTokenFromUrl, getResetTokenFromUrl } from "../utils/resetToken";
 
 const inputClasses =
@@ -22,8 +22,12 @@ function Field({ label, icon: Icon, ...inputProps }) {
 export default function LoginScreen({ onLoggedIn, notice }) {
   const [resetToken] = useState(getResetTokenFromUrl);
   // "login" | "register" | "forgot" (pedir enlace) | "reset" (nueva contraseña)
-  // | "resend" (reenviar el correo de confirmación)
+  // | "verify" (escribir el código de 6 dígitos que llegó al correo)
   const [mode, setMode] = useState(resetToken ? "reset" : "login");
+  const [code, setCode] = useState("");
+  const [resending, setResending] = useState(false);
+  // Usuario y contraseña recién escritos, para entrar solo en cuanto se confirme el código.
+  const [pendingLogin, setPendingLogin] = useState(null);
   const [identifier, setIdentifier] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -38,14 +42,55 @@ export default function LoginScreen({ onLoggedIn, notice }) {
   const isRegister = mode === "register";
   const isForgot = mode === "forgot";
   const isReset = mode === "reset";
-  const isResend = mode === "resend";
-  const asksEmailOnly = isForgot || isResend;
+  const isVerify = mode === "verify";
+  const asksEmailOnly = isForgot;
 
   const switchMode = (newMode) => {
     setMode(newMode);
     setError("");
     setInfo("");
     setNeedsVerification(false);
+    setCode("");
+    if (newMode !== "verify") setPendingLogin(null);
+  };
+
+  // Abre el paso del código. `credentials` permite entrar solo al confirmarlo.
+  const goToVerify = (emailValue, credentials, message) => {
+    switchMode("verify");
+    if (emailValue) setEmail(emailValue);
+    setPendingLogin(credentials);
+    setInfo(message);
+  };
+
+  const enterAfterVerify = async (message) => {
+    if (pendingLogin) {
+      try {
+        await login(pendingLogin.identifier, pendingLogin.password);
+        setPassword("");
+        onLoggedIn();
+        return;
+      } catch (err) {
+        if (err.status !== 403) throw err;
+      }
+    }
+    setIdentifier(pendingLogin?.identifier || email.trim());
+    switchMode("login");
+    setInfo(message);
+  };
+
+  const resendCode = async () => {
+    setError("");
+    setInfo("");
+    setResending(true);
+    try {
+      const data = await resendVerification(email.trim());
+      setCode("");
+      setInfo(data?.detail || "Te enviamos un código nuevo.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setResending(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -64,9 +109,9 @@ export default function LoginScreen({ onLoggedIn, notice }) {
         setInfo(data?.detail || "Revisa tu correo.");
         return;
       }
-      if (isResend) {
-        const data = await resendVerification(email.trim());
-        setInfo(data?.detail || "Revisa tu correo.");
+      if (isVerify) {
+        await verifyEmailCode(email.trim(), code);
+        await enterAfterVerify("Tu correo quedó confirmado. Ya puedes iniciar sesión.");
         return;
       }
       if (isReset) {
@@ -80,17 +125,14 @@ export default function LoginScreen({ onLoggedIn, notice }) {
       }
       if (isRegister) {
         await register({ username: username.trim(), email: email.trim(), password });
-        // Tras registrarse, inicia sesión directamente con lo que escribió.
-        try {
-          await login(username.trim(), password);
-        } catch (err) {
-          if (err.status !== 403) throw err;
-          setIdentifier(username.trim());
-          setPassword("");
-          setMode("login");
-          setInfo("Cuenta creada. Te enviamos un correo para confirmarla: ábrelo y luego inicia sesión.");
-          return;
-        }
+        // Tras registrarse se pide el código que llegó al correo; al confirmarlo entra solo.
+        goToVerify(
+          email.trim(),
+          { identifier: username.trim(), password },
+          `Cuenta creada. Te enviamos un código de 6 dígitos a ${email.trim()}.`,
+        );
+        setPassword("");
+        return;
       } else {
         await login(identifier.trim(), password);
       }
@@ -130,7 +172,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
               type="button"
               onClick={() => switchMode(id)}
               className={`py-2 text-sm rounded-md transition-colors ${
-                mode === id || (id === "login" && (asksEmailOnly || isReset)) ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
+                mode === id || (id === "login" && (asksEmailOnly || isReset || isVerify)) ? "bg-[#1C202D] text-white font-medium" : "text-gray-400 hover:text-white"
               }`}
             >
               {label}
@@ -138,12 +180,12 @@ export default function LoginScreen({ onLoggedIn, notice }) {
           ))}
         </div>
 
-        {(asksEmailOnly || isReset) && (
+        {(asksEmailOnly || isReset || isVerify) && (
           <p className="mb-4 text-xs text-gray-400">
             {isForgot
               ? "Escribe el correo de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
-              : isResend
-                ? "Escribe el correo de tu cuenta y te enviaremos un enlace nuevo para confirmarlo."
+              : isVerify
+                ? "Confirma tu correo: escribe el código de 6 dígitos que te enviamos. Si no llega, revisa spam o pide otro."
                 : "Elige tu nueva contraseña. Al guardarla se cerrarán las sesiones abiertas."}
           </p>
         )}
@@ -157,7 +199,41 @@ export default function LoginScreen({ onLoggedIn, notice }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {asksEmailOnly ? (
+          {isVerify ? (
+            <>
+              <Field
+                label="email"
+                icon={Mail}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="alex@pixelninja.dev"
+                autoComplete="email"
+                required
+              />
+              <div>
+                <label htmlFor="verify-code" className="block text-xs font-mono text-gray-400 mb-1">
+                  código de verificación
+                </label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-3.5 w-4 h-4 text-gray-400" />
+                  <input
+                    id="verify-code"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="\d{6}"
+                    title="Los 6 dígitos del correo"
+                    placeholder="000000"
+                    required
+                    autoFocus
+                    className={`${inputClasses} text-lg font-mono tracking-[0.5em]`}
+                  />
+                </div>
+              </div>
+            </>
+          ) : asksEmailOnly ? (
             <Field
               label="email"
               icon={Mail}
@@ -208,7 +284,7 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             />
           )}
 
-          {!asksEmailOnly && (
+          {!asksEmailOnly && !isVerify && (
             <Field
               label={isReset ? "nueva password" : "password"}
               icon={Lock}
@@ -255,13 +331,16 @@ export default function LoginScreen({ onLoggedIn, notice }) {
               {needsVerification && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (identifier.includes("@")) setEmail(identifier.trim());
-                    switchMode("resend");
-                  }}
+                  onClick={() =>
+                    goToVerify(
+                      identifier.includes("@") ? identifier.trim() : "",
+                      { identifier: identifier.trim(), password },
+                      "",
+                    )
+                  }
                   className="block mt-2 text-[#00F0FF] hover:underline"
                 >
-                  Reenviar el correo de confirmación
+                  Escribir el código de verificación
                 </button>
               )}
             </p>
@@ -269,13 +348,15 @@ export default function LoginScreen({ onLoggedIn, notice }) {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || (isVerify && code.length !== 6)}
             className="w-full mt-2 bg-[#00F0FF] hover:bg-cyan-400 disabled:opacity-60 disabled:cursor-wait text-black font-bold rounded-lg px-4 py-3 transition-colors shadow-[0_0_15px_rgba(0,240,255,0.4)] flex justify-center items-center gap-2 group focus-visible:ring-2 focus-visible:ring-white"
           >
             <span>
               {loading
                 ? "CONECTANDO..."
-                : asksEmailOnly
+                : isVerify
+                  ? "CONFIRMAR CORREO"
+                  : asksEmailOnly
                   ? "ENVIAR ENLACE"
                   : isReset
                     ? "GUARDAR CONTRASEÑA"
@@ -286,6 +367,39 @@ export default function LoginScreen({ onLoggedIn, notice }) {
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </button>
         </form>
+
+        {isVerify && (
+          <div className="mt-4 flex flex-wrap justify-between gap-2 text-xs">
+            <button
+              type="button"
+              onClick={resendCode}
+              disabled={resending || !email.trim()}
+              className="text-[#00F0FF] hover:underline disabled:opacity-50"
+            >
+              {resending ? "Enviando..." : "Reenviar código"}
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!pendingLogin) return switchMode("login");
+                setError("");
+                setLoading(true);
+                try {
+                  // Si el backend exige el correo confirmado, responde 403 y se queda en este paso.
+                  await login(pendingLogin.identifier, pendingLogin.password);
+                  onLoggedIn();
+                } catch (err) {
+                  setError(err.message);
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              className="text-gray-400 hover:text-white"
+            >
+              {pendingLogin ? "Confirmar después →" : "← Volver a iniciar sesión"}
+            </button>
+          </div>
+        )}
 
         {(asksEmailOnly || isReset) && (
           <div className="mt-4 text-center">
